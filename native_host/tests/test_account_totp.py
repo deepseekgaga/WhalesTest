@@ -30,3 +30,10 @@ class AccountTotpTests(unittest.TestCase):
                 find_totp_secret(path, "missing", "pass")
             with self.assertRaisesRegex(AccountTotpError, "totp_secret_missing"):
                 find_totp_secret(path, "empty", "pass")
+
+    def test_rejects_a_corrupt_xlsx_without_crashing_the_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "accounts.xlsx"
+            path.write_bytes(b"not-an-xlsx")
+            with self.assertRaisesRegex(AccountTotpError, "input_excel_invalid"):
+                find_totp_secret(path, "alice", "pass")

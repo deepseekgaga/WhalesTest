@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import BadZipFile
 
 from .xlsx_xml import XlsxError, read_workbook
 
@@ -21,7 +22,7 @@ def find_totp_secret(path: str | Path, username: str, password: str) -> str:
         raise AccountTotpError("input_excel_missing")
     try:
         sheets = read_workbook(path)
-    except (OSError, XlsxError, KeyError, ValueError):
+    except (OSError, BadZipFile, XlsxError, KeyError, ValueError):
         raise AccountTotpError("input_excel_invalid") from None
 
     matches: list[str] = []
