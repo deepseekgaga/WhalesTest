@@ -109,3 +109,19 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError) as caught:
             load_config(path)
         self.assertEqual(str(caught.exception), "invalid_totp_lab_url")
+
+    def test_non_string_totp_lab_test_hook_is_rejected(self):
+        path = self.write_config(
+            {
+                "input_excel": "input.xlsx",
+                "url_column": "\u0043\u0043\u5730\u5740",
+                "txt_directory": "txt\u4fdd\u5b58",
+                "output_excel": "cc\u6c47\u603b.xlsx",
+                "download_timeout_seconds": 180,
+                "field_mappings": {"A": "", "B": "", "C": "", "D": ""},
+                "totp_lab_test_hook": 123,
+            }
+        )
+        with self.assertRaises(ConfigError) as caught:
+            load_config(path)
+        self.assertEqual(str(caught.exception), "invalid_totp_lab_test_hook")
