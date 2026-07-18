@@ -65,6 +65,7 @@ function makeChrome({
   nativeResponse = { ok: true, phone: " +1 555-0100 ", challenge_url: "http://sms-lab.local/challenge?token=abc" },
   helperResults = [{ ok: true, code: "123456" }],
   helperReadPromise = null,
+  helperReadFn = null,
   helperStatuses = ["complete"],
   helperUrlChanges = [],
   requestResult = { ok: true },
@@ -204,6 +205,11 @@ function makeChrome({
           return [{ result: { ok: true } }];
         }
         helperExecutions.push(details);
+        if (helperReadFn) {
+          const result = helperReadFn(details, helperReadIndex);
+          helperReadIndex += 1;
+          return [{ result }];
+        }
         if (helperReadPromise) return helperReadPromise;
         const result = helperResults[Math.min(helperReadIndex, helperResults.length - 1)] ?? { ok: false, error: "helper_page_not_stable" };
         helperReadIndex += 1;
@@ -221,8 +227,14 @@ test("starts with an idle public state before any run", () => {
 });
 
 test("requests SMS, reads the helper once, and submits the code to the same incognito tab", async () => {
+  const clock = makeClock();
   const chrome = makeChrome();
-  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
 
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
@@ -471,6 +483,53 @@ test("does not extend the total deadline when the helper never completes after a
   assert.equal(clock.elapsed, 20_000);
   assert.deepEqual(chrome.reloadedTabs, [30]);
   assert.equal(chrome.helperExecutions.length, 1);
+});
+
+test("slow helper load and read share one absolute read deadline", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperStatuses: [...Array.from({ length: 49 }, () => "loading"), "complete"],
+    helperReadFn(details) {
+      clock.advance(details.args[0].timeoutMs);
+      return { ok: false, error: "code_not_present" };
+    },
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_code_not_found" });
+  assert.equal(chrome.helperExecutions[0].args[0].timeoutMs, 100);
+  assert.equal(clock.elapsed, 60_000);
+  assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
+});
+
+test("final helper read does not start after the absolute 60 second deadline", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperReadFn(details) {
+      clock.advance(details.args[0].timeoutMs);
+      return { ok: false, error: "code_not_present" };
+    },
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_code_not_found" });
+  assert.equal(clock.elapsed, 60_000);
+  assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
+  assert.equal(chrome.helperExecutions.length, 5);
 });
 
 test("maps ambiguous helper codes without retrying or reloading", async () => {

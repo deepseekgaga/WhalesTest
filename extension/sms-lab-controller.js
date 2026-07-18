@@ -287,11 +287,14 @@ export function createSmsLabController(api, options = {}) {
     return result;
   }
 
-  async function executeRead(run, timeoutMs) {
+  async function executeRead(run, deadline) {
     throwIfCancelled(run);
     if (run.helperTabId == null) throw new Error("helper_tab_closed");
-    const loadedHelperTab = await waitForHelperComplete(run, timeoutMs);
+    if (deadline - now() <= 0) return { ok: false, error: "code_not_present" };
+    const loadedHelperTab = await waitForHelperComplete(run, deadline);
     validateChallengeUrl(loadedHelperTab.url);
+    const timeoutMs = deadline - now();
+    if (timeoutMs <= 0) return { ok: false, error: "code_not_present" };
     const helperResults = await bounded(api.scripting.executeScript({
       target: { tabId: run.helperTabId },
       world: "ISOLATED",
@@ -332,8 +335,7 @@ export function createSmsLabController(api, options = {}) {
     }
   }
 
-  async function waitForHelperComplete(run, timeoutMs) {
-    const deadline = now() + timeoutMs;
+  async function waitForHelperComplete(run, deadline) {
     while (now() < deadline) {
       throwIfCancelled(run);
       const helperTab = await api.tabs.get(run.helperTabId);
@@ -347,10 +349,13 @@ export function createSmsLabController(api, options = {}) {
     throw new Error("helper_page_not_stable");
   }
 
-  async function finalReadOrFail(run) {
-    const final = await executeRead(run, 1);
+  async function finalReadOrFail(run, deadline) {
+    const final = await executeRead(run, deadline);
     if (final?.ok) return validateSmsCode(final);
     if (final?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
+    const remaining = deadline - now();
+    if (remaining > 0) await sleep(remaining, run.abort.signal);
+    throwIfCancelled(run);
     throw new Error("sms_code_not_found");
   }
 
@@ -360,20 +365,23 @@ export function createSmsLabController(api, options = {}) {
     let reloads = 0;
 
     while (true) {
-      const readTimeoutMs = Math.max(1, Math.min(HELPER_READ_TIMEOUT_MS, deadline - now()));
-      const result = await executeRead(run, readTimeoutMs);
+      if (deadline - now() <= 0) throw new Error("sms_code_not_found");
+      const readDeadline = Math.min(deadline, now() + HELPER_READ_TIMEOUT_MS);
+      const result = await executeRead(run, readDeadline);
       if (result?.ok) return validateSmsCode(result);
       if (result?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
       if (result?.error !== "code_not_present") throw new Error(result?.error || "helper_page_not_stable");
 
+      const finalReadBudgetMs = 1;
       const nextBoundary = reloads < 3
         ? started + REFRESH_INTERVAL_MS * (reloads + 1)
         : deadline;
-      const sleepMs = Math.max(0, Math.min(deadline, nextBoundary) - now());
+      const sleepLimit = Math.min(deadline - finalReadBudgetMs, nextBoundary);
+      const sleepMs = Math.max(0, sleepLimit - now());
       if (sleepMs > 0) await sleep(sleepMs, run.abort.signal);
       throwIfCancelled(run);
-      if (now() >= deadline) return finalReadOrFail(run);
-      if (reloads >= 3) return finalReadOrFail(run);
+      if (deadline - now() <= 0) throw new Error("sms_code_not_found");
+      if (reloads >= 3) return finalReadOrFail(run, deadline);
       await api.tabs.reload(run.helperTabId);
       reloads += 1;
       throwIfCancelled(run);
