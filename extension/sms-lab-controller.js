@@ -5,14 +5,19 @@ import { SMS_LAB_SELECTORS, requireSmsLabSelectors } from "./sms-lab-selectors.j
 const HOST_NAME = "com.whalestest.cc_batch";
 const REQUEST_TIMEOUT_MS = 15_000;
 const PAGE_ACTION_TIMEOUT_MS = 30_000;
+const REFRESH_INTERVAL_MS = 15_000;
+const TOTAL_TIMEOUT_MS = 60_000;
 const HELPER_READ_TIMEOUT_MS = 5_000;
-const HELPER_LOAD_TIMEOUT_MS = 5_000;
 const HELPER_LOAD_POLL_MS = 100;
 const SMS_LAB_ORIGIN = "http://sms-lab.local";
 const SMS_LAB_HOST = "sms-lab.local";
 
 function makeId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function abortError() {
+  return new DOMException("Aborted", "AbortError");
 }
 
 function publicState(run) {
@@ -29,7 +34,7 @@ function safeError(error, fallback = "sms_lab_failed") {
 function sleepDefault(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new Error("cancelled"));
+      reject(signal.reason ?? abortError());
       return;
     }
     let timer;
@@ -39,7 +44,7 @@ function sleepDefault(ms, signal) {
     };
     const onAbort = () => {
       cleanup();
-      reject(new Error("cancelled"));
+      reject(signal.reason ?? abortError());
     };
     signal?.addEventListener("abort", onAbort, { once: true });
     timer = setTimeout(() => {
@@ -50,6 +55,10 @@ function sleepDefault(ms, signal) {
 }
 
 function registerSmsOnPage() {
+  return { ok: true };
+}
+
+function cancelSmsOnPage() {
   return { ok: true };
 }
 
@@ -139,19 +148,29 @@ export function createSmsLabController(api, options = {}) {
     });
   }
 
-  function request(command, payload = {}) {
+  function request(command, payload = {}, signal) {
     connect();
     const requestId = makeId();
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new Error("cancelled"));
+        return;
+      }
       let timer;
       const cleanup = () => {
         clearTimeout(timer);
         pending.delete(requestId);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("cancelled"));
       };
       timer = setTimeout(() => {
         cleanup();
         reject(new Error("native_host_timeout"));
       }, REQUEST_TIMEOUT_MS);
+      signal?.addEventListener("abort", onAbort, { once: true });
       pending.set(requestId, {
         resolve: (message) => {
           cleanup();
@@ -169,6 +188,62 @@ export function createSmsLabController(api, options = {}) {
   function setState(run, state) {
     run.state = state;
     last = publicState(run);
+  }
+
+  function throwIfCancelled(run) {
+    if (active !== run || run.abort.signal.aborted) throw new Error("cancelled");
+  }
+
+  function abortable(promise, signal) {
+    if (signal.aborted) return Promise.reject(new Error("cancelled"));
+    return new Promise((resolve, reject) => {
+      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("cancelled"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve(promise).then(
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  function bounded(promise, signal, timeoutMs, timeoutError) {
+    if (signal.aborted) return Promise.reject(new Error("cancelled"));
+    return new Promise((resolve, reject) => {
+      let timer;
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("cancelled"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(timeoutError));
+      }, timeoutMs);
+      Promise.resolve(promise).then(
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
+    });
   }
 
   async function assertTabs(motherTabId, incognitoTabId) {
@@ -198,41 +273,139 @@ export function createSmsLabController(api, options = {}) {
     }
   }
 
-  async function executeTarget(tabId, func, args) {
-    const results = await api.scripting.executeScript({
-      target: { tabId },
+  async function executeTarget(run, func, args) {
+    throwIfCancelled(run);
+    const results = await abortable(api.scripting.executeScript({
+      target: { tabId: run.incognitoTabId },
       world: "ISOLATED",
       func,
       args: [args],
-    });
+    }), run.abort.signal);
+    throwIfCancelled(run);
     const result = results?.[0]?.result;
     if (!result?.ok) throw new Error(result?.error || "sms_page_action_failed");
     return result;
   }
 
-  async function waitForHelperComplete(helperTabId) {
-    const deadline = now() + HELPER_LOAD_TIMEOUT_MS;
+  async function executeRead(run, timeoutMs) {
+    throwIfCancelled(run);
+    if (run.helperTabId == null) throw new Error("helper_tab_closed");
+    const loadedHelperTab = await waitForHelperComplete(run, timeoutMs);
+    validateChallengeUrl(loadedHelperTab.url);
+    const helperResults = await bounded(api.scripting.executeScript({
+      target: { tabId: run.helperTabId },
+      world: "ISOLATED",
+      func: readVisibleTotpCode,
+      args: [{ timeoutMs }],
+    }), run.abort.signal, timeoutMs, "helper_page_not_stable");
+    throwIfCancelled(run);
+    return helperResults?.[0]?.result ?? { ok: false, error: "helper_page_not_stable" };
+  }
+
+  async function createHelperTab(run, details) {
+    const createPromise = api.tabs.create(details);
+    createPromise.then(
+      (helperTab) => {
+        if (helperTab?.id && (run.abort.signal.aborted || active !== run) && run.helperTabId !== helperTab.id) {
+          void removeHelperById(run, helperTab.id);
+        }
+      },
+      () => {},
+    );
+    const helperTab = await abortable(createPromise, run.abort.signal);
+    if (!helperTab?.id) throw new Error("helper_tab_create_failed");
+    run.helperTabId = helperTab.id;
+    return helperTab;
+  }
+
+  async function bestEffortCancelTarget(run) {
+    if (!run.incognitoTabId) return;
+    try {
+      await api.scripting.executeScript({
+        target: { tabId: run.incognitoTabId },
+        world: "ISOLATED",
+        func: cancelSmsOnPage,
+        args: [{ runId: run.runId }],
+      });
+    } catch {
+      // best-effort target page cancellation
+    }
+  }
+
+  async function waitForHelperComplete(run, timeoutMs) {
+    const deadline = now() + timeoutMs;
     while (now() < deadline) {
-      const helperTab = await api.tabs.get(helperTabId);
+      throwIfCancelled(run);
+      const helperTab = await api.tabs.get(run.helperTabId);
       if (!helperTab) throw new Error("helper_tab_closed");
       if (helperTab.status === "complete") return helperTab;
       const remaining = deadline - now();
       if (remaining <= 0) break;
-      await sleep(Math.min(HELPER_LOAD_POLL_MS, remaining));
+      await sleep(Math.min(HELPER_LOAD_POLL_MS, remaining), run.abort.signal);
     }
+    throwIfCancelled(run);
     throw new Error("helper_page_not_stable");
+  }
+
+  async function finalReadOrFail(run) {
+    const final = await executeRead(run, 1);
+    if (final?.ok) return validateSmsCode(final);
+    if (final?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
+    throw new Error("sms_code_not_found");
+  }
+
+  async function waitForCode(run) {
+    const started = now();
+    const deadline = started + TOTAL_TIMEOUT_MS;
+    let reloads = 0;
+
+    while (true) {
+      const readTimeoutMs = Math.max(1, Math.min(HELPER_READ_TIMEOUT_MS, deadline - now()));
+      const result = await executeRead(run, readTimeoutMs);
+      if (result?.ok) return validateSmsCode(result);
+      if (result?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
+      if (result?.error !== "code_not_present") throw new Error(result?.error || "helper_page_not_stable");
+
+      const nextBoundary = reloads < 3
+        ? started + REFRESH_INTERVAL_MS * (reloads + 1)
+        : deadline;
+      const sleepMs = Math.max(0, Math.min(deadline, nextBoundary) - now());
+      if (sleepMs > 0) await sleep(sleepMs, run.abort.signal);
+      throwIfCancelled(run);
+      if (now() >= deadline) return finalReadOrFail(run);
+      if (reloads >= 3) return finalReadOrFail(run);
+      await api.tabs.reload(run.helperTabId);
+      reloads += 1;
+      throwIfCancelled(run);
+    }
+  }
+
+  async function removeHelperById(run, helperTabId) {
+    if (run.removedHelperIds.has(helperTabId)) return;
+    run.removedHelperIds.add(helperTabId);
+    try {
+      await api.tabs.remove(helperTabId);
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   async function closeHelper(run) {
     if (run.helperTabId == null) return;
     const helperTabId = run.helperTabId;
     await api.tabs.remove(helperTabId);
+    run.removedHelperIds.add(helperTabId);
     run.helperTabId = null;
   }
 
   async function cleanupHelper(run) {
     if (run.helperTabId == null) return;
     const helperTabId = run.helperTabId;
+    if (run.removedHelperIds.has(helperTabId)) {
+      run.helperTabId = null;
+      return;
+    }
+    run.removedHelperIds.add(helperTabId);
     try {
       await api.tabs.remove(helperTabId);
       run.helperTabId = null;
@@ -245,7 +418,11 @@ export function createSmsLabController(api, options = {}) {
     if (active) throw new Error("sms_lab_run_active");
     const run = {
       runId: makeRunId(),
+      motherTabId,
+      incognitoTabId,
       helperTabId: null,
+      removedHelperIds: new Set(),
+      abort: new AbortController(),
       state: "VALIDATING",
       error: "",
     };
@@ -257,40 +434,34 @@ export function createSmsLabController(api, options = {}) {
       validateRequest({ motherTabId, incognitoTabId, excelRow });
       const { motherTab } = await assertTabs(motherTabId, incognitoTabId);
       await assertTargetActiveTab(incognitoTabId, run.runId);
+      throwIfCancelled(run);
 
       setState(run, "READING_CHALLENGE");
-      const native = await request("get_sms_lab_challenge", { excel_row: excelRow });
+      const native = await request("get_sms_lab_challenge", { excel_row: excelRow }, run.abort.signal);
+      throwIfCancelled(run);
       if (native.ok !== true) throw new Error(native.error || "sms_lab_challenge_failed");
       const phone = validatePhone(native.phone);
       const challengeUrl = validateChallengeUrl(native.challenge_url);
 
       setState(run, "REQUESTING_SMS");
-      await executeTarget(incognitoTabId, requestSmsOnPage, {
+      await executeTarget(run, requestSmsOnPage, {
         phone,
         selectors,
         timeoutMs: PAGE_ACTION_TIMEOUT_MS,
       });
+      throwIfCancelled(run);
 
       setState(run, "OPENING_HELPER");
-      const helperTab = await api.tabs.create({
+      await createHelperTab(run, {
         windowId: motherTab.windowId,
         index: motherTab.index + 1,
         active: false,
         url: challengeUrl,
       });
-      if (!helperTab?.id) throw new Error("helper_tab_create_failed");
-      run.helperTabId = helperTab.id;
+      throwIfCancelled(run);
 
       setState(run, "WAITING_FOR_CODE");
-      const loadedHelperTab = await waitForHelperComplete(run.helperTabId);
-      validateChallengeUrl(loadedHelperTab.url);
-      const helperResults = await api.scripting.executeScript({
-        target: { tabId: run.helperTabId },
-        world: "ISOLATED",
-        func: readVisibleTotpCode,
-        args: [{ timeoutMs: HELPER_READ_TIMEOUT_MS }],
-      });
-      const code = validateSmsCode(helperResults?.[0]?.result);
+      const code = await waitForCode(run);
       await closeHelper(run);
 
       const refreshedMother = await api.tabs.get(motherTabId);
@@ -298,8 +469,9 @@ export function createSmsLabController(api, options = {}) {
       if (refreshedMother.incognito) throw new Error("mother_tab_incognito");
       if (refreshedMother.active !== true) throw new Error("mother_tab_not_active");
 
+      throwIfCancelled(run);
       setState(run, "SUBMITTING_SMS");
-      await executeTarget(incognitoTabId, submitSmsCodeOnPage, {
+      await executeTarget(run, submitSmsCodeOnPage, {
         code,
         selectors,
         timeoutMs: PAGE_ACTION_TIMEOUT_MS,
@@ -309,8 +481,13 @@ export function createSmsLabController(api, options = {}) {
       run.error = "";
       last = publicState(run);
     } catch (error) {
-      run.state = "FAILED";
-      run.error = safeError(error);
+      if (run.abort.signal.aborted || error?.message === "cancelled") {
+        run.state = "CANCELLED";
+        run.error = "cancelled";
+      } else {
+        run.state = "FAILED";
+        run.error = safeError(error);
+      }
       last = publicState(run);
     } finally {
       await cleanupHelper(run);
@@ -320,5 +497,18 @@ export function createSmsLabController(api, options = {}) {
     return { ...last };
   }
 
-  return { run, getState: () => ({ ...last }) };
+  async function cancel(runId) {
+    if (!active || (runId && active.runId !== runId)) return { ...last };
+    const run = active;
+    run.abort.abort(new Error("cancelled"));
+    run.state = "CANCELLED";
+    run.error = "cancelled";
+    last = publicState(run);
+    active = null;
+    await bestEffortCancelTarget(run);
+    await cleanupHelper(run);
+    return { ...last };
+  }
+
+  return { run, cancel, getState: () => ({ ...last }) };
 }
