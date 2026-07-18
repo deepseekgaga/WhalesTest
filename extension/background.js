@@ -251,6 +251,10 @@ function hasExactKeys(message, allowedKeys) {
   return keys.length > 0 && keys.every((key) => allowedKeys.has(key));
 }
 
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 export function createExtensionRuntime(api, options = {}) {
   const batchController = createBatchController(api);
   const totpController = createTotpController(api);
@@ -278,7 +282,7 @@ export function createExtensionRuntime(api, options = {}) {
 
   function validateSmsLabCancelMessage(message) {
     return hasExactKeys(message, allowedSmsLabCancelKeys) &&
-      (!Object.hasOwn(message, "runId") || isPositiveInteger(message.runId));
+      (!Object.hasOwn(message, "runId") || isNonEmptyString(message.runId));
   }
 
   function validateSmsLabStateMessage(message) {

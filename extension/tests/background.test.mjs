@@ -163,8 +163,10 @@ function makeSmsLabChrome({
   helperReadResult = { ok: true, code: "654321" },
   challengeUrl = "http://sms-lab.local/encoded?test_hook=lab-hook",
   phone = "15555550123",
+  holdNativeChallenge = false,
 } = {}) {
   const nativeMessages = [];
+  const pendingNativeChallengeResponses = [];
   const executions = [];
   const createdTabs = [];
   const removedTabs = [];
@@ -179,12 +181,14 @@ function makeSmsLabChrome({
     postMessage(message) {
       nativeMessages.push(message);
       if (message.command !== "get_sms_lab_challenge") return;
-      queueMicrotask(() => nativeListener?.({
+      const respond = () => nativeListener?.({
         request_id: message.request_id,
         ok: true,
         phone,
         challenge_url: challengeUrl,
-      }));
+      });
+      if (holdNativeChallenge) pendingNativeChallengeResponses.push(respond);
+      else queueMicrotask(respond);
     },
   };
   const api = {
@@ -262,7 +266,7 @@ function createSmsRuntime(chrome) {
   return createExtensionRuntime(chrome, {
     smsLab: {
       selectors: CONFIGURED_SMS_SELECTORS,
-      makeRunId: () => 101,
+      makeRunId: () => "sms-run-1",
       sleep: async () => {},
     },
   });
@@ -422,7 +426,7 @@ test("routes run_sms_lab through native, SMS page, helper read, and submit", asy
 
   assert.equal(response.ok, true);
   assert.equal(response.result.state, "SUCCEEDED");
-  assert.equal(response.result.runId, 101);
+  assert.equal(response.result.runId, "sms-run-1");
   assert.equal(runtime.smsLabController.getState().state, "SUCCEEDED");
   assert.equal(chrome.nativeMessages[0].command, "get_sms_lab_challenge");
   assert.equal(chrome.nativeMessages[0].excel_row, 2);
@@ -463,8 +467,8 @@ test("rejects extra fields on every SMS Lab route", async () => {
     { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2, challengeUrl: "http://sms-lab.local/x" },
     { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2, code: "654321" },
     { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2, selectors: CONFIGURED_SMS_SELECTORS },
-    { type: "cancel_sms_lab", runId: 101, code: "654321" },
-    { type: "sms_lab_state", runId: 101 },
+    { type: "cancel_sms_lab", runId: "sms-run-1", code: "654321" },
+    { type: "sms_lab_state", runId: "sms-run-1" },
   ]) {
     const chrome = makeSmsLabChrome();
     createSmsRuntime(chrome);
@@ -480,9 +484,12 @@ test("rejects invalid SMS Lab run and cancel route identifiers", async () => {
   for (const message of [
     { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 1 },
     { type: "run_sms_lab", motherTabId: true, incognitoTabId: 20, excelRow: 2 },
-    { type: "cancel_sms_lab", runId: "101" },
+    { type: "cancel_sms_lab", runId: "" },
+    { type: "cancel_sms_lab", runId: 101 },
     { type: "cancel_sms_lab", runId: null },
     { type: "cancel_sms_lab", runId: true },
+    { type: "cancel_sms_lab", runId: ["sms-run-1"] },
+    { type: "cancel_sms_lab", runId: { value: "sms-run-1" } },
   ]) {
     const chrome = makeSmsLabChrome();
     createSmsRuntime(chrome);
@@ -520,17 +527,31 @@ test("exposes synchronous non-sensitive SMS Lab idle state", async () => {
   assert.deepEqual(response, { ok: true, result: { state: "IDLE", runId: null, error: "" } });
 });
 
-test("allows cancelling an SMS Lab run when an integer run id is supplied", async () => {
-  const chrome = makeSmsLabChrome();
+test("routes a non-empty string SMS Lab run id to the controller cancellation", async () => {
+  const chrome = makeSmsLabChrome({ holdNativeChallenge: true });
   const runtime = createSmsRuntime(chrome);
-  const response = await new Promise((resolve) => {
-    const keepChannelOpen = chrome.messageListener({ type: "cancel_sms_lab", runId: 101 }, { id: "ext" }, resolve);
+  const runResponse = new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener(
+      { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2 },
+      { id: "ext" },
+      resolve,
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+  await waitFor(() => chrome.nativeMessages.length === 1);
+
+  const cancelResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener({ type: "cancel_sms_lab", runId: "sms-run-1" }, { id: "ext" }, resolve);
     assert.equal(keepChannelOpen, true);
   });
 
-  assert.equal(response.ok, true);
-  assert.equal(response.result.state, "IDLE");
-  assert.equal(runtime.smsLabController.getState().state, "IDLE");
+  assert.equal(cancelResponse.ok, true);
+  assert.equal(cancelResponse.result.state, "CANCELLED");
+  assert.equal(cancelResponse.result.runId, "sms-run-1");
+  const completedRun = await runResponse;
+  assert.equal(completedRun.ok, true);
+  assert.equal(completedRun.result.state, "CANCELLED");
+  assert.equal(runtime.smsLabController.getState().state, "CANCELLED");
 });
 
 test("packages the SMS Lab selector, page, and controller files", async () => {
