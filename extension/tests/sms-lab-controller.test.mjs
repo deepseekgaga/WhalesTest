@@ -746,6 +746,60 @@ test("maps a known helper tabs.get rejection during retry to helper_tab_closed",
   assert.deepEqual(chrome.removedTabs, [30]);
 });
 
+test("maps helper closure between retry preflight and reload to helper_tab_closed", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperResults: [{ ok: false, error: "code_not_present" }],
+    removeFailures: ["No tab with id: 30."],
+  });
+  const originalReload = chrome.tabs.reload;
+  chrome.tabs.reload = async (tabId) => {
+    await originalReload(tabId);
+    throw new Error("No tab with id: 30.");
+  };
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "helper_tab_closed" });
+  assert.deepEqual(chrome.reloadedTabs, [30]);
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.motherMutations, []);
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
+    "registerSmsOnPage",
+    "requestSmsOnPage",
+  ]);
+});
+
+test("sanitizes unexpected helper reload failures without treating the helper as closed", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({ helperResults: [{ ok: false, error: "code_not_present" }] });
+  const originalReload = chrome.tabs.reload;
+  chrome.tabs.reload = async (tabId) => {
+    await originalReload(tabId);
+    throw new Error("Unexpected reload service failure at https://sms-lab.local/private?token=secret");
+  };
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_failed" });
+  assert.deepEqual(chrome.reloadedTabs, [30]);
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.motherMutations, []);
+});
+
 test("cancel with the wrong run id has no effect on the active SMS run", async () => {
   const clock = makeClock({ pause: true });
   const chrome = makeChrome({ helperResults: [{ ok: false, error: "code_not_present" }] });

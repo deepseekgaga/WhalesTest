@@ -46,6 +46,15 @@ async function getTabOrNull(api, tabId) {
   }
 }
 
+async function reloadHelperTab(api, tabId) {
+  try {
+    await api.tabs.reload(tabId);
+  } catch (error) {
+    if (isMissingTabError(error)) throw new Error("helper_tab_closed");
+    throw error;
+  }
+}
+
 function sleepDefault(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -428,7 +437,7 @@ export function createSmsLabController(api, options = {}) {
       if (reloads >= 3) return finalReadOrFail(run, deadline);
       const helperTab = await getTabOrNull(api, run.helperTabId);
       if (!helperTab) throw new Error("helper_tab_closed");
-      await api.tabs.reload(run.helperTabId);
+      await reloadHelperTab(api, run.helperTabId);
       reloads += 1;
       throwIfCancelled(run);
     }
