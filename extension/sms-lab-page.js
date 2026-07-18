@@ -8,6 +8,10 @@ export function registerSmsOnPage({ runId } = {}) {
   return { ok: true };
 }
 
+export function probeSmsOnPage() {
+  return { ok: true };
+}
+
 export function cancelSmsOnPage({ runId } = {}) {
   const registryKey = "__whalestestSmsLabRunControllers__";
   const registry = globalThis[registryKey];

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SMS_LAB_SELECTORS, requireSmsLabSelectors } from "../sms-lab-selectors.js";
-import { cancelSmsOnPage, registerSmsOnPage, requestSmsOnPage, submitSmsCodeOnPage } from "../sms-lab-page.js";
+import { cancelSmsOnPage, probeSmsOnPage, registerSmsOnPage, requestSmsOnPage, submitSmsCodeOnPage } from "../sms-lab-page.js";
 
 const configuredSelectors = Object.freeze({
   phoneInput: "#sms-phone",
@@ -467,6 +467,17 @@ test("registered SMS request actions can be cancelled before clicking", async ()
   );
 });
 
+test("SMS page activeTab probe is self-contained and does not create a run token", async () => {
+  assert.deepEqual(probeSmsOnPage(), { ok: true });
+  assert.deepEqual(
+    await requestSmsOnPage(
+      { runId: "probe-only", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document: createDocument() }),
+    ),
+    { ok: false, error: "cancelled" },
+  );
+});
+
 test("registered SMS submit actions can be cancelled before submitting", async () => {
   assert.deepEqual(registerSmsOnPage({ runId: "run-submit" }), { ok: true });
   const codeInput = createElement();
@@ -562,6 +573,7 @@ test("registered SMS tokens are cleaned up after page action success and failure
 });
 
 test("page action functions are self-contained for executeScript serialization", async () => {
+  const serializedProbe = Function(`"use strict"; return (${probeSmsOnPage.toString()});`)();
   const serializedRegister = Function(`"use strict"; return (${registerSmsOnPage.toString()});`)();
   const serializedCancel = Function(`"use strict"; return (${cancelSmsOnPage.toString()});`)();
   const serializedRequest = Function(`"use strict"; return (${requestSmsOnPage.toString()});`)();
@@ -581,6 +593,7 @@ test("page action functions are self-contained for executeScript serialization",
     },
   });
 
+  assert.deepEqual(serializedProbe(), { ok: true });
   assert.deepEqual(serializedRegister({ runId: "serialized-run" }), { ok: true });
   assert.deepEqual(
     await serializedRequest(

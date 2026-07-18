@@ -70,6 +70,7 @@ function makeChrome({
   helperUrlChanges = [],
   requestResult = { ok: true },
   requestPromise = null,
+  requestReject = null,
   submitResult = { ok: true },
   submitPromise = null,
   registerResult = { ok: true },
@@ -193,11 +194,18 @@ function makeChrome({
       async executeScript(details) {
         if (details.target.tabId === incognitoTab?.id) {
           targetExecutions.push(details);
+          if (details.func.name === "probeSmsOnPage") {
+            if (!incognitoTab.activeTabGranted) throw new Error("active_tab_missing");
+            return [{ result: { ok: true } }];
+          }
           if (details.func.name === "registerSmsOnPage") {
             if (!incognitoTab.activeTabGranted) throw new Error("active_tab_missing");
             return [{ result: registerResult }];
           }
-          if (details.func.name === "requestSmsOnPage") return requestPromise ?? [{ result: requestResult }];
+          if (details.func.name === "requestSmsOnPage") {
+            if (requestReject) throw new Error(requestReject);
+            return requestPromise ?? [{ result: requestResult }];
+          }
           if (details.func.name === "submitSmsCodeOnPage") return submitPromise ?? [{ result: submitResult }];
           if (details.func.name === "cancelSmsOnPage") return cancelPromise ?? [{ result: cancelResult }];
         }
@@ -253,14 +261,16 @@ test("requests SMS, reads the helper once, and submits the code to the same inco
     url: "http://sms-lab.local/challenge?token=abc",
   });
   assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
     "registerSmsOnPage",
     "requestSmsOnPage",
+    "probeSmsOnPage",
     "registerSmsOnPage",
     "submitSmsCodeOnPage",
   ]);
   assert.deepEqual(chrome.helperExecutions.map((entry) => entry.func.name), ["readVisibleTotpCode"]);
   assert.equal(chrome.targetExecutions.every((entry) => entry.target.tabId === 20), true);
-  assert.deepEqual(chrome.targetExecutions[1].args[0], {
+  assert.deepEqual(chrome.targetExecutions[2].args[0], {
     runId: "run-1",
     requireExistingToken: true,
     phone: " +1 555-0100 ",
@@ -268,7 +278,7 @@ test("requests SMS, reads the helper once, and submits the code to the same inco
     timeoutMs: 30_000,
   });
   assert.deepEqual(chrome.helperExecutions[0].args[0], { timeoutMs: 5_000 });
-  assert.deepEqual(chrome.targetExecutions[3].args[0], {
+  assert.deepEqual(chrome.targetExecutions[5].args[0], {
     runId: "run-1",
     requireExistingToken: true,
     code: "123456",
@@ -335,8 +345,35 @@ test("rejects invalid native responses before requesting SMS on the target", asy
     assert.equal(result.state, "FAILED");
     assert.equal(result.error, expectedError);
     assert.equal(chrome.createdTabs.length, 0);
-    assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["registerSmsOnPage"]);
+    assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["probeSmsOnPage"]);
   }
+});
+
+test("native challenge failure after activeTab probe does not leave a page registry token", async () => {
+  const chrome = makeChrome({ nativeResponse: { ok: false, error: "sms_lab_challenge_failed" } });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_challenge_failed" });
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["probeSmsOnPage"]);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "registerSmsOnPage"), false);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "cancelSmsOnPage"), false);
+});
+
+test("request registration is cancelled when request executeScript rejects before page cleanup", async () => {
+  const chrome = makeChrome({ requestReject: "execute_script_failed" });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_page_action_failed" });
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
+    "registerSmsOnPage",
+    "requestSmsOnPage",
+    "cancelSmsOnPage",
+  ]);
 });
 
 test("removes the helper and fails when the helper redirects before reading", async () => {
@@ -350,7 +387,7 @@ test("removes the helper and fails when the helper redirects before reading", as
   assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_url_invalid" });
   assert.deepEqual(chrome.removedTabs, [30]);
   assert.equal(chrome.helperExecutions.length, 0);
-  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["registerSmsOnPage", "requestSmsOnPage"]);
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["probeSmsOnPage", "registerSmsOnPage", "requestSmsOnPage"]);
 });
 
 test("maps ambiguous helper codes, rejects malformed codes, and cleans up the helper", async () => {
@@ -641,7 +678,7 @@ test("cancel while requesting SMS on the page aborts the page execution and does
 
   assert.equal(chrome.createdTabs.length, 0);
   assert.deepEqual(chrome.removedTabs, []);
-  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["registerSmsOnPage", "requestSmsOnPage", "cancelSmsOnPage"]);
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["probeSmsOnPage", "registerSmsOnPage", "requestSmsOnPage", "cancelSmsOnPage"]);
 });
 
 test("cancel while helper creation is pending removes the late helper exactly once", async () => {
@@ -740,6 +777,44 @@ test("new SMS runs are rejected while cancellation is still unwinding", async ()
   releaseCancel();
   assert.deepEqual(await cancelling, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
   assert.deepEqual(await running, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+});
+
+test("never-settling page cancel injection is bounded before allowing a new run", async () => {
+  const clock = makeClock({ pause: true });
+  let runSequence = 0;
+  const chrome = makeChrome({
+    helperResults: [
+      { ok: false, error: "code_not_present" },
+      { ok: true, code: "654321" },
+    ],
+    cancelPromise: new Promise(() => {}),
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => `run-${++runSequence}`,
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+    cancelPageTimeoutMs: 10,
+  });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => clock.pending.length === 1);
+  const cancelling = controller.cancel("run-1");
+  await waitUntil(() => chrome.targetExecutions.some((entry) => entry.func.name === "cancelSmsOnPage"));
+  await assert.rejects(
+    () => controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 }),
+    (error) => error?.message === "sms_lab_run_active",
+  );
+
+  assert.deepEqual(await Promise.race([
+    cancelling,
+    new Promise((resolve) => setTimeout(() => resolve({ state: "HUNG" }), 100)),
+  ]), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(await running, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(
+    await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 }),
+    { state: "SUCCEEDED", runId: "run-2", error: "" },
+  );
 });
 
 test("final cleanup retries when helper removal fails during cancel", async () => {
