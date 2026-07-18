@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 from zipfile import BadZipFile
 
 from .config import Config
 from .xlsx_xml import XlsxError, read_numbered_workbook
 
 
+TOTP_LAB_BASE_URL = "http://totp-lab.local/"
 TEST_HOOK_PLACEHOLDER = "__FILL_TOTP_TEST_HOOK__"
 
 
@@ -22,14 +23,7 @@ class TotpLabError(ValueError):
 
 
 def _validate_base_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "http"
-        or parsed.netloc != "totp-lab.local"
-        or parsed.path != "/"
-        or parsed.query
-        or parsed.fragment
-    ):
+    if value != TOTP_LAB_BASE_URL:
         raise TotpLabError("totp_lab_url_invalid")
     return value
 

@@ -60,9 +60,13 @@ class TotpLabTests(unittest.TestCase):
             workbook = Path(directory) / "accounts.xlsx"
             write_xlsx(workbook, [["header", "", "secret"]])
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
+                build_totp_lab_challenge(self.config(directory, workbook, url="HTTP://totp-lab.local/"), 1)
+            with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
                 build_totp_lab_challenge(self.config(directory, workbook, url="https://totp-lab.local/"), 1)
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
                 build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/path"), 1)
+            with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
+                build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/?debug=1"), 1)
             with self.assertRaisesRegex(TotpLabError, "totp_test_hook_not_configured"):
                 build_totp_lab_challenge(self.config(directory, workbook, hook=""), 1)
             with self.assertRaisesRegex(TotpLabError, "totp_test_hook_not_configured"):
