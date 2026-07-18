@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SMS_LAB_SELECTORS, requireSmsLabSelectors } from "../sms-lab-selectors.js";
-import { requestSmsOnPage, submitSmsCodeOnPage } from "../sms-lab-page.js";
+import { cancelSmsOnPage, registerSmsOnPage, requestSmsOnPage, submitSmsCodeOnPage } from "../sms-lab-page.js";
 
 const configuredSelectors = Object.freeze({
   phoneInput: "#sms-phone",
@@ -78,6 +78,26 @@ function stableEnv({ document, now = () => 0, sleep = async () => {}, waitForQui
     sleep,
     waitForQuiet,
     signal,
+  };
+}
+
+function deferredWait() {
+  const pending = [];
+  return {
+    waitForQuiet: (ms, signal) => new Promise((resolve, reject) => {
+      const entry = { resolve, reject };
+      const onAbort = () => {
+        signal?.removeEventListener("abort", onAbort);
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      entry.resolve = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      pending.push(entry);
+    }),
+    pending,
   };
 }
 
@@ -408,7 +428,142 @@ test("submitSmsCodeOnPage reports missing controls, disabled controls, unstable 
   );
 });
 
+test("registered SMS request actions can be cancelled before clicking", async () => {
+  assert.deepEqual(registerSmsOnPage({ runId: "run-request" }), { ok: true });
+  const phoneInput = createElement();
+  const sendButton = createElement({ tagName: "button" });
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.phoneInput]: phoneInput,
+      [configuredSelectors.sendButton]: sendButton,
+    },
+  });
+  const deferred = deferredWait();
+  const running = requestSmsOnPage(
+    {
+      runId: "run-request",
+      requireExistingToken: true,
+      phone: "555",
+      selectors: configuredSelectors,
+      timeoutMs: 100,
+    },
+    stableEnv({ document, waitForQuiet: deferred.waitForQuiet }),
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(cancelSmsOnPage({ runId: "run-request" }), { ok: true });
+  assert.deepEqual(await running, { ok: false, error: "cancelled" });
+  deferred.pending.forEach((entry) => entry.resolve());
+
+  assert.equal(phoneInput.value, "");
+  assert.deepEqual(phoneInput.events, []);
+  assert.equal(sendButton.clicked, 0);
+  assert.deepEqual(
+    await requestSmsOnPage(
+      { runId: "run-request", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
+    { ok: false, error: "cancelled" },
+  );
+});
+
+test("registered SMS submit actions can be cancelled before submitting", async () => {
+  assert.deepEqual(registerSmsOnPage({ runId: "run-submit" }), { ok: true });
+  const codeInput = createElement();
+  const submitButton = createElement({ tagName: "button" });
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.codeInput]: codeInput,
+      [configuredSelectors.submitButton]: submitButton,
+    },
+  });
+  const deferred = deferredWait();
+  const running = submitSmsCodeOnPage(
+    {
+      runId: "run-submit",
+      requireExistingToken: true,
+      code: "123456",
+      selectors: configuredSelectors,
+      timeoutMs: 100,
+    },
+    stableEnv({ document, waitForQuiet: deferred.waitForQuiet }),
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(cancelSmsOnPage({ runId: "run-submit" }), { ok: true });
+  assert.deepEqual(await running, { ok: false, error: "cancelled" });
+  deferred.pending.forEach((entry) => entry.resolve());
+
+  assert.equal(codeInput.value, "");
+  assert.deepEqual(codeInput.events, []);
+  assert.equal(submitButton.clicked, 0);
+  assert.deepEqual(
+    await submitSmsCodeOnPage(
+      { runId: "run-submit", requireExistingToken: true, code: "123456", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
+    { ok: false, error: "cancelled" },
+  );
+});
+
+test("registered SMS tokens are cleaned up after page action success and failure", async () => {
+  assert.deepEqual(registerSmsOnPage({ runId: "cleanup-request" }), { ok: true });
+  const phoneInput = createElement();
+  const sendButton = createElement({ tagName: "button" });
+  const requestDocument = createDocument({
+    elements: {
+      [configuredSelectors.phoneInput]: phoneInput,
+      [configuredSelectors.sendButton]: sendButton,
+    },
+  });
+  assert.deepEqual(
+    await requestSmsOnPage(
+      {
+        runId: "cleanup-request",
+        requireExistingToken: true,
+        phone: "555",
+        selectors: configuredSelectors,
+        timeoutMs: 100,
+      },
+      stableEnv({ document: requestDocument }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    await requestSmsOnPage(
+      { runId: "cleanup-request", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document: requestDocument }),
+    ),
+    { ok: false, error: "cancelled" },
+  );
+
+  assert.deepEqual(registerSmsOnPage({ runId: "cleanup-submit" }), { ok: true });
+  const missingInputDocument = createDocument({ elements: { [configuredSelectors.submitButton]: createElement({ tagName: "button" }) } });
+  assert.deepEqual(
+    await submitSmsCodeOnPage(
+      {
+        runId: "cleanup-submit",
+        requireExistingToken: true,
+        code: "123456",
+        selectors: configuredSelectors,
+        timeoutMs: 100,
+      },
+      stableEnv({ document: missingInputDocument }),
+    ),
+    { ok: false, error: "sms_code_input_not_found" },
+  );
+  assert.deepEqual(
+    await submitSmsCodeOnPage(
+      { runId: "cleanup-submit", requireExistingToken: true, code: "123456", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document: missingInputDocument }),
+    ),
+    { ok: false, error: "cancelled" },
+  );
+});
+
 test("page action functions are self-contained for executeScript serialization", async () => {
+  const serializedRegister = Function(`"use strict"; return (${registerSmsOnPage.toString()});`)();
+  const serializedCancel = Function(`"use strict"; return (${cancelSmsOnPage.toString()});`)();
   const serializedRequest = Function(`"use strict"; return (${requestSmsOnPage.toString()});`)();
   const serializedSubmit = Function(`"use strict"; return (${submitSmsCodeOnPage.toString()});`)();
   const form = {
@@ -426,14 +581,23 @@ test("page action functions are self-contained for executeScript serialization",
     },
   });
 
+  assert.deepEqual(serializedRegister({ runId: "serialized-run" }), { ok: true });
   assert.deepEqual(
-    await serializedRequest({ phone: "555", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    await serializedRequest(
+      { runId: "serialized-run", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
     { ok: true },
   );
+  assert.deepEqual(serializedRegister({ runId: "serialized-run" }), { ok: true });
   assert.deepEqual(
-    await serializedSubmit({ code: "654321", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    await serializedSubmit(
+      { runId: "serialized-run", requireExistingToken: true, code: "654321", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
     { ok: true },
   );
+  assert.deepEqual(serializedCancel({ runId: "serialized-run" }), { ok: true });
   assert.equal(form.submitted, 0);
   assert.equal(document.querySelector(configuredSelectors.sendButton).clicked, 1);
   assert.equal(document.querySelector(configuredSelectors.submitButton).clicked, 1);

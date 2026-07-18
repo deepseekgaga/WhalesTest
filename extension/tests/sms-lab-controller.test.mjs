@@ -74,6 +74,7 @@ function makeChrome({
   submitPromise = null,
   registerResult = { ok: true },
   cancelResult = { ok: true },
+  cancelPromise = null,
   removeFailures = [],
   delayNative = false,
   delayCreate = false,
@@ -198,7 +199,7 @@ function makeChrome({
           }
           if (details.func.name === "requestSmsOnPage") return requestPromise ?? [{ result: requestResult }];
           if (details.func.name === "submitSmsCodeOnPage") return submitPromise ?? [{ result: submitResult }];
-          if (details.func.name === "cancelSmsOnPage") return [{ result: cancelResult }];
+          if (details.func.name === "cancelSmsOnPage") return cancelPromise ?? [{ result: cancelResult }];
         }
         if (details.target.tabId === motherTab?.id) {
           motherMutations.push(["executeScript", details]);
@@ -254,17 +255,22 @@ test("requests SMS, reads the helper once, and submits the code to the same inco
   assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
     "registerSmsOnPage",
     "requestSmsOnPage",
+    "registerSmsOnPage",
     "submitSmsCodeOnPage",
   ]);
   assert.deepEqual(chrome.helperExecutions.map((entry) => entry.func.name), ["readVisibleTotpCode"]);
   assert.equal(chrome.targetExecutions.every((entry) => entry.target.tabId === 20), true);
   assert.deepEqual(chrome.targetExecutions[1].args[0], {
+    runId: "run-1",
+    requireExistingToken: true,
     phone: " +1 555-0100 ",
     selectors: configuredSelectors,
     timeoutMs: 30_000,
   });
   assert.deepEqual(chrome.helperExecutions[0].args[0], { timeoutMs: 5_000 });
-  assert.deepEqual(chrome.targetExecutions[2].args[0], {
+  assert.deepEqual(chrome.targetExecutions[3].args[0], {
+    runId: "run-1",
+    requireExistingToken: true,
     code: "123456",
     selectors: configuredSelectors,
     timeoutMs: 30_000,
@@ -704,6 +710,56 @@ test("cancel while submitting SMS aborts promptly and keeps mother and target un
   assert.deepEqual(chrome.removedTabs, [30]);
   assert.deepEqual(chrome.motherMutations, []);
   assert.deepEqual(chrome.reloadedTabs, []);
+});
+
+test("new SMS runs are rejected while cancellation is still unwinding", async () => {
+  const clock = makeClock({ pause: true });
+  let releaseCancel;
+  const chrome = makeChrome({
+    helperResults: [{ ok: false, error: "code_not_present" }],
+    cancelPromise: new Promise((resolve) => {
+      releaseCancel = () => resolve([{ result: { ok: true } }]);
+    }),
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => clock.pending.length === 1);
+  const cancelling = controller.cancel("run-1");
+  await waitUntil(() => chrome.targetExecutions.some((entry) => entry.func.name === "cancelSmsOnPage"));
+  await assert.rejects(
+    () => controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 }),
+    (error) => error?.message === "sms_lab_run_active",
+  );
+
+  releaseCancel();
+  assert.deepEqual(await cancelling, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(await running, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+});
+
+test("final cleanup retries when helper removal fails during cancel", async () => {
+  const clock = makeClock({ pause: true });
+  const chrome = makeChrome({
+    helperResults: [{ ok: false, error: "code_not_present" }],
+    removeFailures: ["transient_remove_failure"],
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => clock.pending.length === 1);
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(await running, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(chrome.removedTabs, [30, 30]);
 });
 
 test("public SMS state never exposes phone, URL, or code values", async () => {

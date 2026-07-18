@@ -1,4 +1,23 @@
-export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, quietMs = 800, sampleGapMs = 250 } = {}, env = {}) {
+export function registerSmsOnPage({ runId } = {}) {
+  const registryKey = "__whalestestSmsLabRunControllers__";
+  if (typeof runId !== "string" || runId.length === 0) return { ok: false, error: "request_invalid" };
+  const registry = globalThis[registryKey] ?? new Map();
+  globalThis[registryKey] = registry;
+  registry.get(runId)?.abort?.();
+  registry.set(runId, new AbortController());
+  return { ok: true };
+}
+
+export function cancelSmsOnPage({ runId } = {}) {
+  const registryKey = "__whalestestSmsLabRunControllers__";
+  const registry = globalThis[registryKey];
+  const controller = typeof runId === "string" ? registry?.get?.(runId) : null;
+  controller?.abort?.();
+  registry?.delete?.(runId);
+  return { ok: true };
+}
+
+export async function requestSmsOnPage({ runId, requireExistingToken = false, phone, selectors, timeoutMs = 30_000, quietMs = 800, sampleGapMs = 250 } = {}, env = {}) {
   const placeholders = {
     phoneInput: "__FILL_SMS_PHONE_INPUT_SELECTOR__",
     sendButton: "__FILL_SMS_SEND_BUTTON_SELECTOR__",
@@ -20,7 +39,14 @@ export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, q
   const documentObject = env.document ?? globalThis.document;
   const EventCtor = env.Event ?? globalThis.Event;
   const now = env.now ?? Date.now;
-  const signal = env.signal;
+  const registryKey = "__whalestestSmsLabRunControllers__";
+  const registry = globalThis[registryKey];
+  const tokenSignal = typeof runId === "string" ? registry?.get?.(runId)?.signal : null;
+  const signal = requireExistingToken ? tokenSignal : env.signal;
+  const cleanupToken = () => {
+    if (requireExistingToken && typeof runId === "string") globalThis[registryKey]?.delete?.(runId);
+  };
+  if (requireExistingToken && !signal) return { ok: false, error: "cancelled" };
   const sleep = env.sleep ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
       reject(abortSignal.reason ?? abortError());
@@ -72,6 +98,7 @@ export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, q
     timer = setTimeout(done, ms);
   }));
 
+  try {
   if (typeof phone !== "string" || phone.length === 0) return { ok: false, error: "sms_phone_invalid" };
   let configuredSelectors;
   try {
@@ -198,9 +225,11 @@ export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, q
   if (signal?.aborted) return { ok: false, error: "cancelled" };
   if (!stable) return { ok: false, error: "page_not_stable" };
 
+  if (signal?.aborted) return { ok: false, error: "cancelled" };
   setNativeValue(stable.input, phone);
   stable.input.dispatchEvent(new EventCtor("input", { bubbles: true }));
   stable.input.dispatchEvent(new EventCtor("change", { bubbles: true }));
+  if (signal?.aborted) return { ok: false, error: "cancelled" };
   try {
     if (typeof stable.button.click === "function") stable.button.click();
     else if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
@@ -208,9 +237,12 @@ export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, q
     return { ok: false, error: "sms_send_failed" };
   }
   return { ok: true };
+  } finally {
+    cleanupToken();
+  }
 }
 
-export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000, quietMs = 800, sampleGapMs = 250 } = {}, env = {}) {
+export async function submitSmsCodeOnPage({ runId, requireExistingToken = false, code, selectors, timeoutMs = 30_000, quietMs = 800, sampleGapMs = 250 } = {}, env = {}) {
   const placeholders = {
     phoneInput: "__FILL_SMS_PHONE_INPUT_SELECTOR__",
     sendButton: "__FILL_SMS_SEND_BUTTON_SELECTOR__",
@@ -232,7 +264,14 @@ export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000,
   const documentObject = env.document ?? globalThis.document;
   const EventCtor = env.Event ?? globalThis.Event;
   const now = env.now ?? Date.now;
-  const signal = env.signal;
+  const registryKey = "__whalestestSmsLabRunControllers__";
+  const registry = globalThis[registryKey];
+  const tokenSignal = typeof runId === "string" ? registry?.get?.(runId)?.signal : null;
+  const signal = requireExistingToken ? tokenSignal : env.signal;
+  const cleanupToken = () => {
+    if (requireExistingToken && typeof runId === "string") globalThis[registryKey]?.delete?.(runId);
+  };
+  if (requireExistingToken && !signal) return { ok: false, error: "cancelled" };
   const sleep = env.sleep ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
       reject(abortSignal.reason ?? abortError());
@@ -284,6 +323,7 @@ export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000,
     timer = setTimeout(done, ms);
   }));
 
+  try {
   if (typeof code !== "string" || !/^\d{6}$/.test(code)) return { ok: false, error: "sms_code_invalid" };
   let configuredSelectors;
   try {
@@ -410,9 +450,11 @@ export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000,
   if (signal?.aborted) return { ok: false, error: "cancelled" };
   if (!stable) return { ok: false, error: "page_not_stable" };
 
+  if (signal?.aborted) return { ok: false, error: "cancelled" };
   setNativeValue(stable.input, code);
   stable.input.dispatchEvent(new EventCtor("input", { bubbles: true }));
   stable.input.dispatchEvent(new EventCtor("change", { bubbles: true }));
+  if (signal?.aborted) return { ok: false, error: "cancelled" };
   try {
     if (typeof stable.button.click === "function") stable.button.click();
     else if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
@@ -420,4 +462,7 @@ export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000,
     return { ok: false, error: "sms_submit_failed" };
   }
   return { ok: true };
+  } finally {
+    cleanupToken();
+  }
 }

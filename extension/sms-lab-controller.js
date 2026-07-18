@@ -1,5 +1,5 @@
 import { readVisibleTotpCode } from "./totp-lab-page.js";
-import { requestSmsOnPage, submitSmsCodeOnPage } from "./sms-lab-page.js";
+import { cancelSmsOnPage, registerSmsOnPage, requestSmsOnPage, submitSmsCodeOnPage } from "./sms-lab-page.js";
 import { SMS_LAB_SELECTORS, requireSmsLabSelectors } from "./sms-lab-selectors.js";
 
 const HOST_NAME = "com.whalestest.cc_batch";
@@ -52,14 +52,6 @@ function sleepDefault(ms, signal) {
       resolve();
     }, ms);
   });
-}
-
-function registerSmsOnPage() {
-  return { ok: true };
-}
-
-function cancelSmsOnPage() {
-  return { ok: true };
 }
 
 function validateChallengeUrl(value) {
@@ -132,6 +124,14 @@ export function createSmsLabController(api, options = {}) {
   let active = null;
   let last = publicState(null);
   const pending = new Map();
+
+  function makeDeferred() {
+    let resolve;
+    const promise = new Promise((nextResolve) => {
+      resolve = nextResolve;
+    });
+    return { promise, resolve };
+  }
 
   function connect() {
     if (port) return;
@@ -389,34 +389,40 @@ export function createSmsLabController(api, options = {}) {
   }
 
   async function removeHelperById(run, helperTabId) {
-    if (run.removedHelperIds.has(helperTabId)) return;
-    run.removedHelperIds.add(helperTabId);
-    try {
-      await api.tabs.remove(helperTabId);
-    } catch {
-      // best-effort cleanup
-    }
+    if (!run.lateHelperRemovals) run.lateHelperRemovals = new Map();
+    if (run.lateHelperRemovals.has(helperTabId)) return run.lateHelperRemovals.get(helperTabId);
+    const removal = api.tabs.remove(helperTabId)
+      .catch(() => {
+        // best-effort late helper cleanup
+      })
+      .finally(() => {
+        run.lateHelperRemovals.delete(helperTabId);
+      });
+    run.lateHelperRemovals.set(helperTabId, removal);
+    return removal;
+  }
+
+  async function removeRecordedHelper(run) {
+    if (run.helperTabId == null) return;
+    if (run.helperRemoval) return run.helperRemoval;
+    const helperTabId = run.helperTabId;
+    run.helperRemoval = api.tabs.remove(helperTabId)
+      .then(() => {
+        if (run.helperTabId === helperTabId) run.helperTabId = null;
+      })
+      .finally(() => {
+        run.helperRemoval = null;
+      });
+    return run.helperRemoval;
   }
 
   async function closeHelper(run) {
-    if (run.helperTabId == null) return;
-    const helperTabId = run.helperTabId;
-    await api.tabs.remove(helperTabId);
-    run.removedHelperIds.add(helperTabId);
-    run.helperTabId = null;
+    await removeRecordedHelper(run);
   }
 
   async function cleanupHelper(run) {
-    if (run.helperTabId == null) return;
-    const helperTabId = run.helperTabId;
-    if (run.removedHelperIds.has(helperTabId)) {
-      run.helperTabId = null;
-      return;
-    }
-    run.removedHelperIds.add(helperTabId);
     try {
-      await api.tabs.remove(helperTabId);
-      run.helperTabId = null;
+      await removeRecordedHelper(run);
     } catch {
       // best-effort cleanup
     }
@@ -424,12 +430,16 @@ export function createSmsLabController(api, options = {}) {
 
   async function run({ motherTabId, incognitoTabId, excelRow } = {}) {
     if (active) throw new Error("sms_lab_run_active");
+    const completion = makeDeferred();
     const run = {
       runId: makeRunId(),
       motherTabId,
       incognitoTabId,
       helperTabId: null,
-      removedHelperIds: new Set(),
+      helperRemoval: null,
+      lateHelperRemovals: new Map(),
+      completion: completion.promise,
+      resolveCompletion: completion.resolve,
       abort: new AbortController(),
       state: "VALIDATING",
       error: "",
@@ -453,6 +463,8 @@ export function createSmsLabController(api, options = {}) {
 
       setState(run, "REQUESTING_SMS");
       await executeTarget(run, requestSmsOnPage, {
+        runId: run.runId,
+        requireExistingToken: true,
         phone,
         selectors,
         timeoutMs: PAGE_ACTION_TIMEOUT_MS,
@@ -478,8 +490,12 @@ export function createSmsLabController(api, options = {}) {
       if (refreshedMother.active !== true) throw new Error("mother_tab_not_active");
 
       throwIfCancelled(run);
+      await assertTargetActiveTab(incognitoTabId, run.runId);
+      throwIfCancelled(run);
       setState(run, "SUBMITTING_SMS");
       await executeTarget(run, submitSmsCodeOnPage, {
+        runId: run.runId,
+        requireExistingToken: true,
         code,
         selectors,
         timeoutMs: PAGE_ACTION_TIMEOUT_MS,
@@ -500,6 +516,7 @@ export function createSmsLabController(api, options = {}) {
     } finally {
       await cleanupHelper(run);
       if (active === run) active = null;
+      run.resolveCompletion();
     }
 
     return { ...last };
@@ -512,10 +529,11 @@ export function createSmsLabController(api, options = {}) {
     run.state = "CANCELLED";
     run.error = "cancelled";
     last = publicState(run);
-    active = null;
     await bestEffortCancelTarget(run);
     await cleanupHelper(run);
-    return { ...last };
+    await run.completion;
+    await cleanupHelper(run);
+    return publicState(run);
   }
 
   return { run, cancel, getState: () => ({ ...last }) };
