@@ -3,12 +3,23 @@
 """通过显式实验钩子验证本地滑块靶场的后续页面流程。"""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 
 ALLOWED_HOST = "test-target.local"
 ALLOWED_NETLOC = ALLOWED_HOST
+HOOK_SCRIPT = """
+async (token) => {
+  const response = await fetch('/__lab__/slider/approve', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'X-Lab-Test-Token': token}
+  });
+  return {ok: response.ok, status: response.status};
+}
+"""
 
 
 class LabRunnerError(RuntimeError):
@@ -55,3 +66,57 @@ class RunnerConfig:
         validate_target(self.url)
         if not 1 <= self.attempts <= 3:
             raise LabRunnerError("attempts_invalid")
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """不包含测试令牌或服务器响应正文的公开运行结果。"""
+
+    ok: bool
+    attempts: int
+    error: str = ""
+
+
+class SliderLabRunner:
+    """通过固定同源测试钩子验证滑块后的页面状态。"""
+
+    def __init__(self, config: RunnerConfig, token: str):
+        if not isinstance(token, str) or not token:
+            raise LabRunnerError("test_token_missing")
+        self.config = config
+        self._token = token
+
+    def _screenshot_path(self, attempt: int) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        return self.config.screenshot_dir / f"attempt-{attempt}-{timestamp}.png"
+
+    def _capture_failure(self, page, attempt: int) -> None:
+        self.config.screenshot_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(self._screenshot_path(attempt)), full_page=True)
+
+    def run_page(self, page) -> RunResult:
+        last_error = "success_state_missing"
+
+        for attempt in range(1, self.config.attempts + 1):
+            page.goto(self.config.url, wait_until="networkidle")
+            hook_result = page.evaluate(HOOK_SCRIPT, self._token)
+
+            if isinstance(hook_result, dict) and hook_result.get("ok") is True:
+                page.reload(wait_until="networkidle")
+                success_visible = page.locator(
+                    self.config.success_selector,
+                ).is_visible(timeout=5_000)
+                slider_missing = page.locator(self.config.slider_selector).count() == 0
+                if success_visible or slider_missing:
+                    return RunResult(ok=True, attempts=attempt)
+                last_error = "success_state_missing"
+            else:
+                last_error = "test_hook_rejected"
+
+            self._capture_failure(page, attempt)
+
+        return RunResult(
+            ok=False,
+            attempts=self.config.attempts,
+            error=last_error,
+        )
