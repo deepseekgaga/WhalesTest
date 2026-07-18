@@ -146,6 +146,7 @@ class HostProtocolTests(unittest.TestCase):
             result = HostApplication(config_path).dispatch({
                 "command": "get_sms_lab_challenge",
                 "excel_row": 2,
+                "request_id": "sms-request-1",
             })
 
             self.assertEqual(
@@ -156,6 +157,25 @@ class HostProtocolTests(unittest.TestCase):
                     "challenge_url": "http://sms-lab.local/challenge?id=abc%201",
                 },
             )
+
+    def test_get_sms_lab_challenge_rejects_extra_fields_before_loading_workbook(self):
+        extras = {
+            "phone": "+1 555 9999",
+            "code": "123456",
+            "challenge_url": "http://sms-lab.local/secret",
+            "selectors": {"phone": "#phone"},
+            "unexpected": "sensitive-value",
+        }
+        for key, value in extras.items():
+            with self.subTest(key=key):
+                result = HostApplication("missing-config.json").dispatch({
+                    "command": "get_sms_lab_challenge",
+                    "excel_row": 2,
+                    key: value,
+                })
+
+                self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+                self.assertNotIn(str(value), str(result))
 
     def test_get_sms_lab_challenge_rejects_invalid_rows_without_echoing_sensitive_fields(self):
         sensitive_message = {
