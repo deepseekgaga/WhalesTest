@@ -147,6 +147,39 @@ class SmsLabTests(unittest.TestCase):
                 with self.assertRaisesRegex(SmsLabError, "sms_url_invalid"):
                     build_sms_lab_challenge(config, 2)
 
+    def test_rejects_sms_urls_with_raw_whitespace(self):
+        rejects = [
+            " http://sms-lab.local/path",
+            "http://sms-lab.local/path ",
+            "http://sms-lab.local/has space",
+            "http://sms-lab.local/path?code=a b",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            workbook = Path(directory) / "accounts.xlsx"
+            config = self.config(directory, workbook)
+            for url in rejects:
+                with self.subTest(url=repr(url)):
+                    with patch("native_host.cc_batch.sms_lab.read_numbered_workbook", return_value={"Sheet1": [(2, ["", "", "", "555", url])]}):
+                        with self.assertRaisesRegex(SmsLabError, "sms_url_invalid"):
+                            build_sms_lab_challenge(config, 2)
+
+    def test_rejects_sms_urls_with_c0_and_control_characters(self):
+        rejects = [
+            "http://sms-lab.local/line\nbreak",
+            "http://sms-lab.local/line\rbreak",
+            "http://sms-lab.local/tab\tbreak",
+            "http://sms-lab.local/nul\x00break",
+            "http://sms-lab.local/delete\x7fbreak",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            workbook = Path(directory) / "accounts.xlsx"
+            config = self.config(directory, workbook)
+            for url in rejects:
+                with self.subTest(url=repr(url)):
+                    with patch("native_host.cc_batch.sms_lab.read_numbered_workbook", return_value={"Sheet1": [(2, ["", "", "", "555", url])]}):
+                        with self.assertRaisesRegex(SmsLabError, "sms_url_invalid"):
+                            build_sms_lab_challenge(config, 2)
+
     def test_maps_missing_invalid_malformed_and_incomplete_workbooks(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.xlsx"

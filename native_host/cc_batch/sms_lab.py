@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
@@ -42,6 +42,8 @@ def _load_first_sheet_rows(path: Path) -> list[tuple[int, list[str]]]:
 def _validate_sms_url(value: object) -> str:
     if not isinstance(value, str):
         raise SmsLabError("sms_url_invalid")
+    if _has_unsafe_url_character(value):
+        raise SmsLabError("sms_url_invalid")
     try:
         parsed = urlsplit(value)
         _ = parsed.port
@@ -58,7 +60,14 @@ def _validate_sms_url(value: object) -> str:
         or not parsed.path.startswith("/")
     ):
         raise SmsLabError("sms_url_invalid")
-    return value
+    canonical_url = urlunsplit(parsed)
+    if _has_unsafe_url_character(canonical_url):
+        raise SmsLabError("sms_url_invalid")
+    return canonical_url
+
+
+def _has_unsafe_url_character(value: str) -> bool:
+    return any(character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
 def build_sms_lab_challenge(config: Config, excel_row: int) -> SmsLabChallenge:
