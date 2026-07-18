@@ -134,8 +134,8 @@ test("requestSmsOnPage preserves the exact phone string and submits once with in
   assert.deepEqual(result, { ok: true });
   assert.equal(phoneInput.value, "  +1 555 0100  ");
   assert.deepEqual(phoneInput.events, ["input", "change"]);
-  assert.deepEqual(form.submittedWith, [sendButton]);
-  assert.equal(sendButton.clicked, 0);
+  assert.deepEqual(form.submittedWith, []);
+  assert.equal(sendButton.clicked, 1);
 });
 
 test("requestSmsOnPage uses the native value setter when one is available", async () => {
@@ -162,6 +162,57 @@ test("requestSmsOnPage uses the native value setter when one is available", asyn
     { ok: true },
   );
   assert.equal(phoneInput.nativeSetterValue, " 555 ");
+});
+
+test("requestSmsOnPage prefers clicking the send button over form requestSubmit", async () => {
+  const form = {
+    submittedWith: [],
+    requestSubmit(button) {
+      this.submittedWith.push(button);
+      throw new Error("requestSubmit should not be used for SMS send");
+    },
+  };
+  const phoneInput = createElement();
+  const sendButton = createElement({ tagName: "button", form });
+  sendButton.setAttribute("type", "button");
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.phoneInput]: phoneInput,
+      [configuredSelectors.sendButton]: sendButton,
+    },
+  });
+
+  assert.deepEqual(
+    await requestSmsOnPage({ phone: "555", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: true },
+  );
+  assert.equal(sendButton.clicked, 1);
+  assert.deepEqual(form.submittedWith, []);
+});
+
+test("requestSmsOnPage supports click-handler-only buttons and reports send failures", async () => {
+  const phoneInput = createElement();
+  const sendButton = createElement({ tagName: "button" });
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.phoneInput]: phoneInput,
+      [configuredSelectors.sendButton]: sendButton,
+    },
+  });
+
+  assert.deepEqual(
+    await requestSmsOnPage({ phone: "555", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: true },
+  );
+  assert.equal(sendButton.clicked, 1);
+
+  sendButton.click = () => {
+    throw new Error("send failed");
+  };
+  assert.deepEqual(
+    await requestSmsOnPage({ phone: "555", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: false, error: "sms_send_failed" },
+  );
 });
 
 test("requestSmsOnPage validates phone, missing controls, disabled controls, unstable pages, and cancellation", async () => {
@@ -253,7 +304,58 @@ test("submitSmsCodeOnPage accepts exactly six digits and submits once", async ()
   assert.deepEqual(result, { ok: true });
   assert.equal(codeInput.value, "012345");
   assert.deepEqual(codeInput.events, ["input", "change"]);
-  assert.deepEqual(form.submittedWith, [submitButton]);
+  assert.deepEqual(form.submittedWith, []);
+  assert.equal(submitButton.clicked, 1);
+});
+
+test("submitSmsCodeOnPage prefers clicking the submit button over form requestSubmit", async () => {
+  const form = {
+    submittedWith: [],
+    requestSubmit(button) {
+      this.submittedWith.push(button);
+      throw new Error("requestSubmit should not be used when click is available");
+    },
+  };
+  const codeInput = createElement();
+  const submitButton = createElement({ tagName: "button", form });
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.codeInput]: codeInput,
+      [configuredSelectors.submitButton]: submitButton,
+    },
+  });
+
+  assert.deepEqual(
+    await submitSmsCodeOnPage({ code: "123456", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: true },
+  );
+  assert.equal(submitButton.clicked, 1);
+  assert.deepEqual(form.submittedWith, []);
+});
+
+test("submitSmsCodeOnPage supports click-handler-only buttons and reports submit failures", async () => {
+  const codeInput = createElement();
+  const submitButton = createElement({ tagName: "button" });
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.codeInput]: codeInput,
+      [configuredSelectors.submitButton]: submitButton,
+    },
+  });
+
+  assert.deepEqual(
+    await submitSmsCodeOnPage({ code: "123456", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: true },
+  );
+  assert.equal(submitButton.clicked, 1);
+
+  submitButton.click = () => {
+    throw new Error("submit failed");
+  };
+  assert.deepEqual(
+    await submitSmsCodeOnPage({ code: "123456", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
+    { ok: false, error: "sms_submit_failed" },
+  );
 });
 
 test("submitSmsCodeOnPage reports missing controls, disabled controls, unstable pages, and cancellation", async () => {
@@ -332,5 +434,7 @@ test("page action functions are self-contained for executeScript serialization",
     await serializedSubmit({ code: "654321", selectors: configuredSelectors, timeoutMs: 100 }, stableEnv({ document })),
     { ok: true },
   );
-  assert.equal(form.submitted, 2);
+  assert.equal(form.submitted, 0);
+  assert.equal(document.querySelector(configuredSelectors.sendButton).clicked, 1);
+  assert.equal(document.querySelector(configuredSelectors.submitButton).clicked, 1);
 });

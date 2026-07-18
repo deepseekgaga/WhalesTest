@@ -201,8 +201,12 @@ export async function requestSmsOnPage({ phone, selectors, timeoutMs = 30_000, q
   setNativeValue(stable.input, phone);
   stable.input.dispatchEvent(new EventCtor("input", { bubbles: true }));
   stable.input.dispatchEvent(new EventCtor("change", { bubbles: true }));
-  if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
-  else if (typeof stable.button.click === "function") stable.button.click();
+  try {
+    if (typeof stable.button.click === "function") stable.button.click();
+    else if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
+  } catch {
+    return { ok: false, error: "sms_send_failed" };
+  }
   return { ok: true };
 }
 
@@ -409,7 +413,11 @@ export async function submitSmsCodeOnPage({ code, selectors, timeoutMs = 30_000,
   setNativeValue(stable.input, code);
   stable.input.dispatchEvent(new EventCtor("input", { bubbles: true }));
   stable.input.dispatchEvent(new EventCtor("change", { bubbles: true }));
-  if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
-  else if (typeof stable.button.click === "function") stable.button.click();
+  try {
+    if (typeof stable.button.click === "function") stable.button.click();
+    else if (typeof stable.button.form?.requestSubmit === "function") stable.button.form.requestSubmit(stable.button);
+  } catch {
+    return { ok: false, error: "sms_submit_failed" };
+  }
   return { ok: true };
 }
