@@ -33,6 +33,7 @@ function makeChrome({
   requestResult = { ok: true },
   submitResult = { ok: true },
   registerResult = { ok: true },
+  removeFailures = [],
 } = {}) {
   const nativeMessages = [];
   const createdTabs = [];
@@ -106,6 +107,8 @@ function makeChrome({
       },
       async remove(tabId) {
         removedTabs.push(tabId);
+        const failure = removeFailures.shift();
+        if (failure) throw new Error(failure);
         tabsById.delete(tabId);
       },
       async reload(tabId) {
@@ -138,6 +141,13 @@ function makeChrome({
     },
   };
 }
+
+test("starts with an idle public state before any run", () => {
+  const chrome = makeChrome();
+  const controller = createSmsLabController(chrome, { selectors: configuredSelectors });
+
+  assert.deepEqual(controller.getState(), { state: "IDLE", runId: null, error: "" });
+});
 
 test("requests SMS, reads the helper once, and submits the code to the same incognito tab", async () => {
   const chrome = makeChrome();
@@ -257,6 +267,7 @@ test("removes the helper and fails when the helper redirects before reading", as
 test("maps ambiguous helper codes, rejects malformed codes, and cleans up the helper", async () => {
   for (const [expectedError, helperResults] of [
     ["sms_code_ambiguous", [{ ok: false, error: "totp_code_ambiguous" }]],
+    ["sms_code_not_found", [{ ok: false, error: "code_not_present" }]],
     ["sms_code_invalid", [{ ok: true, code: "12345" }]],
     ["sms_code_invalid", [{ ok: true, code: "1234567" }]],
   ]) {
@@ -269,6 +280,20 @@ test("maps ambiguous helper codes, rejects malformed codes, and cleans up the he
     assert.deepEqual(chrome.removedTabs, [30]);
     assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "submitSmsCodeOnPage"), false);
   }
+});
+
+test("retries helper cleanup when the first close after code read fails", async () => {
+  const chrome = makeChrome({
+    removeFailures: ["helper close failed with http://sms-lab.local/challenge?token=abc and 123456"],
+  });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_failed" });
+  assert.deepEqual(controller.getState(), { state: "FAILED", runId: "run-1", error: "sms_lab_failed" });
+  assert.deepEqual(chrome.removedTabs, [30, 30]);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "submitSmsCodeOnPage"), false);
 });
 
 test("rechecks the mother tab before submitting and cleans up the helper on page action errors", async () => {

@@ -18,7 +18,7 @@ function makeId() {
 function publicState(run) {
   return run
     ? { state: run.state, runId: run.runId, error: run.error }
-    : { state: "VALIDATING", runId: null, error: "" };
+    : { state: "IDLE", runId: null, error: "" };
 }
 
 function safeError(error, fallback = "sms_lab_failed") {
@@ -108,6 +108,7 @@ function validatePhone(value) {
 function validateSmsCode(result) {
   if (!result?.ok) {
     if (result?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
+    if (result?.error === "code_not_present") throw new Error("sms_code_not_found");
     throw new Error(result?.error || "helper_page_not_stable");
   }
   if (typeof result.code !== "string" || !/^\d{6}$/.test(result.code)) throw new Error("sms_code_invalid");
@@ -225,16 +226,16 @@ export function createSmsLabController(api, options = {}) {
   async function closeHelper(run) {
     if (run.helperTabId == null) return;
     const helperTabId = run.helperTabId;
-    run.helperTabId = null;
     await api.tabs.remove(helperTabId);
+    run.helperTabId = null;
   }
 
   async function cleanupHelper(run) {
     if (run.helperTabId == null) return;
     const helperTabId = run.helperTabId;
-    run.helperTabId = null;
     try {
       await api.tabs.remove(helperTabId);
+      run.helperTabId = null;
     } catch {
       // best-effort cleanup
     }
