@@ -11,6 +11,7 @@
 - 不允许空白行参与映射。
 - 验证码页按 15 秒刷新一次，60 秒后放弃。
 - 辅助页同时显示多个候选验证码时，直接拒绝，不做猜测。
+- TOTP 成功后的短信流程由上层显式调用独立 `run_sms_lab`，并复用同一组 `motherTabId`、`incognitoTabId` 和 `excelRow`。
 - 滑块研究工具只允许 `http://test-target.local`，不会生成真人化鼠标轨迹。
 
 ## 配置文件
@@ -34,6 +35,92 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-native-host.ps1 -Exte
 ```
 
 4. 修改 `native_host/config.json` 后，重新运行安装脚本，让本地 Native Host 配置同步。
+
+## 本地短信验证码靶场
+
+短信模块只用于本地授权靶场。它不会接管批处理主循环，也不会替 TOTP 模块推进 Excel 行号。
+
+### 调用边界
+
+上层流程在 TOTP 成功后调用独立消息 `run_sms_lab`。调用方必须传入与 TOTP 成功时相同的：
+
+- `motherTabId`：普通窗口中的母页标签页，必须保持 active。
+- `incognitoTabId`：同一个无痕标签页，先接收手机号，再接收短信验证码。
+- `excelRow`：Excel 物理行号。第 1 行是表头，数据行从第 2 行开始。
+
+短信模块不会推进到下一行，不会点击最终接受按钮，也不会启动下一任务。它只完成本地短信请求、读取唯一可见 6 位验证码、回填到同一个无痕标签页这一个阶段。
+
+### Excel 列约定
+
+`native_host/cc_batch/sms_lab.py` 只读取第一个工作表的同一物理行：
+
+| 列 | 内容 |
+| --- | --- |
+| D | 手机号，按单元格原值精确传递，不修剪格式。 |
+| E | 完整 `http://sms-lab.local/*` 靶场 URL。 |
+
+E 列 URL 必须是 `http://sms-lab.local/` 下的完整 URL；模块拒绝 HTTPS、外部主机、子域名、端口、凭据、片段、空白或控制字符。Native Host 响应只返回 `phone` 和 `challenge_url`，不返回账号、密码、TOTP secret 或短信验证码。
+
+### 选择器配置
+
+运行前必须在 `extension/sms-lab-selectors.js` 配置四个页面选择器字面量，不能保留占位值：
+
+```javascript
+const PLACEHOLDERS = Object.freeze({
+  phoneInput: "__FILL_SMS_PHONE_INPUT_SELECTOR__",
+  sendButton: "__FILL_SMS_SEND_BUTTON_SELECTOR__",
+  codeInput: "__FILL_SMS_CODE_INPUT_SELECTOR__",
+  submitButton: "__FILL_SMS_SUBMIT_BUTTON_SELECTOR__",
+});
+```
+
+四个值分别定位手机号输入框、发送短信按钮、验证码输入框和提交验证码按钮。选择器未配置时，控制器会在请求 Native Host 前失败。
+
+### 标签页与验证码读取
+
+短信控制器保持母页 active，不切换母页焦点。辅助页使用 `chrome.tabs.create` 在母页右侧打开，参数包含 `active: false`，并且只允许停留在 `http://sms-lab.local/*`。如果辅助页加载后重定向到其他来源，控制器会拒绝并停止读取。
+
+验证码读取规则：
+
+- 同一个无痕标签页完成手机号发送和验证码提交。
+- 辅助页每 15 秒刷新一次，最多刷新到 45 秒边界。
+- 60 秒是硬截止时间；截止后返回未找到验证码。
+- 只接受唯一可见的 6 位数字。
+- 同时出现多个候选验证码时返回歧义错误，不做猜测。
+
+取消 `cancel_sms_lab` 会中止当前 run，尽力通知无痕页清理页面令牌，并关闭已知辅助页。取消后不会继续提交验证码。
+
+### 消息示例
+
+`run_sms_lab` 示例：
+
+```javascript
+chrome.runtime.sendMessage({
+  type: "run_sms_lab",
+  motherTabId: 101,
+  incognitoTabId: 202,
+  excelRow: 2,
+});
+```
+
+`cancel_sms_lab` 示例：
+
+```javascript
+chrome.runtime.sendMessage({
+  type: "cancel_sms_lab",
+  runId: "sms-run-placeholder",
+});
+```
+
+`sms_lab_state` 示例：
+
+```javascript
+chrome.runtime.sendMessage({
+  type: "sms_lab_state",
+});
+```
+
+这些消息不得携带 phone、url、code、password 或其他敏感字段；Service Worker 会拒绝额外字段。
 
 ## 授权滑块靶场测试钩子
 
@@ -117,13 +204,15 @@ python -m unittest discover -s tests -v
 node --test extension/tests/*.test.mjs
 python -m unittest tests.test_authorized_slider_lab -v
 python tools/authorized_slider_lab.py --help
-powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -OutputDirectory (Join-Path $env:TEMP 'whalestest-extension-package')
+powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -OutputDirectory (Join-Path $env:TEMP 'sms-final')
 ```
 
 ## 安全边界
 
 - 不做验证码绕过，不做滑块绕过。
 - 不生成或回放真人化拖动轨迹，不使用 `page.mouse` 或 `drag_to`。
-- 不记录密钥、验证码或密码。
+- 不记录 phone、url、code、password、手机号、短信链接、验证码、密钥或密码。
 - 不使用 `<all_urls>`。
+- 不连接商业接码平台、commercial receiver 或 `2fa.run`。
+- 不实现 CAPTCHA、拖拽、滑块缺口识别、`generate_track` 或任何自动绕过逻辑。
 - 仅为授权环境中的本地测试保留必要权限。
