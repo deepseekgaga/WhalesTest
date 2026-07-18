@@ -55,7 +55,7 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
   const withinDeadline = () => remainingMs() > 0;
   const waitWithDeadline = async (operation) => {
     const remaining = remainingMs();
-    if (remaining <= 0) return false;
+    if (remaining <= 0) return signal?.aborted ? "aborted" : false;
     if (signal?.aborted) return "aborted";
     const controller = new AbortController();
     const onAbort = () => controller.abort(signal.reason ?? abortError());
@@ -116,5 +116,6 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
     throw error;
   }
 
+  if (signal?.aborted) return { ok: false, error: "cancelled" };
   return { ok: false, error: "helper_page_not_stable" };
 }

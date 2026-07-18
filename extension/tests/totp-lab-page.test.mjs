@@ -108,6 +108,21 @@ test("does not return a visible code while document readiness is still loading",
   assert.deepEqual(await readVisibleTotpCode({ timeoutMs: 120, quietMs: 40, sampleGapMs: 20 }, env), { ok: false, error: "helper_page_not_stable" });
 });
 
+test("returns cancelled when abort and timeout happen together at the deadline", async () => {
+  const controller = new AbortController();
+  let clock = 0;
+  const env = stableEnvironment({
+    text: "Lab code 123456",
+    now: () => clock,
+    signal: controller.signal,
+    waitForQuiet: async () => {
+      clock = 100;
+      controller.abort(new DOMException("Aborted", "AbortError"));
+    },
+  });
+  assert.deepEqual(await readVisibleTotpCode({ timeoutMs: 100 }, env), { ok: false, error: "cancelled" });
+});
+
 test("returns cancelled when aborted while waiting", async () => {
   const abortError = new DOMException("Aborted", "AbortError");
   const env = stableEnvironment({
