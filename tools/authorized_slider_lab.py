@@ -2,6 +2,10 @@
 
 """通过显式实验钩子验证本地滑块靶场的后续页面流程。"""
 
+import argparse
+import importlib
+import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +65,7 @@ class RunnerConfig:
     slider_selector: str = "#slider-handle"
     attempts: int = 3
     screenshot_dir: Path = Path("artifacts/slider-lab")
+    headless: bool = True
 
     def __post_init__(self) -> None:
         validate_target(self.url)
@@ -120,3 +125,132 @@ class SliderLabRunner:
             attempts=self.config.attempts,
             error=last_error,
         )
+
+
+def _close_quietly(resource) -> None:
+    if resource is None:
+        return
+    try:
+        resource.close()
+    except Exception:
+        pass
+
+
+def run_with_browser(
+    config: RunnerConfig,
+    token: str,
+    playwright_factory,
+) -> RunResult:
+    """启动 Playwright，保证浏览器资源在成功和失败路径均被关闭。"""
+    runner = SliderLabRunner(config, token)
+    browser = None
+    context = None
+
+    try:
+        with playwright_factory() as playwright:
+            browser = playwright.chromium.launch(headless=config.headless)
+            try:
+                context = browser.new_context()
+                page = context.new_page()
+                return runner.run_page(page)
+            except Exception:
+                return RunResult(ok=False, attempts=0, error="browser_error")
+            finally:
+                _close_quietly(context)
+                _close_quietly(browser)
+    except Exception:
+        _close_quietly(context)
+        _close_quietly(browser)
+        return RunResult(ok=False, attempts=0, error="browser_error")
+
+
+def load_playwright(import_module=importlib.import_module):
+    """延迟加载 Playwright，使 `--help` 和单元测试不依赖该软件包。"""
+    try:
+        module = import_module("playwright.sync_api")
+    except ImportError as exc:
+        raise LabRunnerError("playwright_not_installed") from exc
+    return module.sync_playwright
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="通过授权靶场的显式测试钩子验证滑块后的页面流程。",
+    )
+    parser.add_argument(
+        "--url",
+        default="http://test-target.local/slider-captcha",
+        help="授权页面 URL；仅允许 http://test-target.local。",
+    )
+    parser.add_argument(
+        "--success-selector",
+        default=".captcha-success",
+        help="验证成功元素选择器。",
+    )
+    parser.add_argument(
+        "--slider-selector",
+        default="#slider-handle",
+        help="滑块按钮选择器；按钮消失也可作为成功状态。",
+    )
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        choices=range(1, 4),
+        default=3,
+        metavar="1-3",
+        help="最大尝试次数，范围 1 到 3。",
+    )
+    parser.add_argument(
+        "--screenshot-dir",
+        type=Path,
+        default=Path("artifacts/slider-lab"),
+        help="失败截图目录。",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="显示 Chromium 窗口；默认使用无头模式。",
+    )
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> RunnerConfig:
+    return RunnerConfig(
+        url=args.url,
+        success_selector=args.success_selector,
+        slider_selector=args.slider_selector,
+        attempts=args.attempts,
+        screenshot_dir=args.screenshot_dir,
+        headless=not args.headed,
+    )
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    try:
+        config = config_from_args(args)
+        token = os.environ.get("SLIDER_LAB_TEST_TOKEN", "")
+        if not token:
+            raise LabRunnerError("test_token_missing")
+        result = run_with_browser(config, token, load_playwright())
+    except LabRunnerError as exc:
+        error = str(exc)
+        print(f"失败：{error}", file=sys.stderr)
+        if error == "playwright_not_installed":
+            print(
+                "安装：python -m pip install playwright；然后运行 playwright install chromium",
+                file=sys.stderr,
+            )
+        return 2
+
+    if result.ok:
+        print(f"验证成功；尝试次数：{result.attempts}")
+        return 0
+
+    print(f"验证失败：{result.error}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
