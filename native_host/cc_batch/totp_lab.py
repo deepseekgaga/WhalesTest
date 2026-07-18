@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from urllib.parse import quote, urlencode
+from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
 from .config import Config
@@ -33,7 +34,7 @@ def _load_first_sheet_rows(path: Path) -> list[tuple[int, list[str]]]:
         workbook = read_numbered_workbook(path)
     except FileNotFoundError as exc:
         raise TotpLabError("input_excel_missing") from exc
-    except (OSError, BadZipFile, XlsxError, ValueError) as exc:
+    except (OSError, BadZipFile, KeyError, ParseError, XlsxError, ValueError) as exc:
         raise TotpLabError("input_excel_invalid") from exc
     return next(iter(workbook.values()), [])
 

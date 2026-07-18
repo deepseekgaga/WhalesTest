@@ -3,10 +3,43 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from native_host.cc_batch.config import Config
 from native_host.cc_batch.totp_lab import TEST_HOOK_PLACEHOLDER, TotpLabError, build_totp_lab_challenge
 from native_host.tests.xlsx_fixture import write_xlsx
+
+
+MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def write_incomplete_xlsx_without_workbook_rels(path: Path) -> None:
+    workbook_xml = (
+        f'<workbook xmlns="{MAIN}" xmlns:r="{REL}"><sheets>'
+        f'<sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
+        "</sheets></workbook>"
+    )
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("xl/workbook.xml", workbook_xml)
+
+
+def write_malformed_sheet_xlsx(path: Path) -> None:
+    workbook_xml = (
+        f'<workbook xmlns="{MAIN}" xmlns:r="{REL}"><sheets>'
+        f'<sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
+        "</sheets></workbook>"
+    )
+    workbook_rels = (
+        f'<Relationships xmlns="{PKG_REL}"><Relationship Id="rId1" '
+        f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/worksheets/sheet1.xml", "<worksheet><sheetData><row>")
 
 
 class TotpLabTests(unittest.TestCase):
@@ -71,3 +104,15 @@ class TotpLabTests(unittest.TestCase):
                 build_totp_lab_challenge(self.config(directory, workbook, hook=""), 1)
             with self.assertRaisesRegex(TotpLabError, "totp_test_hook_not_configured"):
                 build_totp_lab_challenge(self.config(directory, workbook, hook=TEST_HOOK_PLACEHOLDER), 1)
+
+    def test_rejects_incomplete_or_malformed_xlsx_without_leaking_parser_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing_rels = Path(directory) / "missing-rels.xlsx"
+            write_incomplete_xlsx_without_workbook_rels(missing_rels)
+            with self.assertRaisesRegex(TotpLabError, "input_excel_invalid"):
+                build_totp_lab_challenge(self.config(directory, missing_rels), 1)
+
+            malformed_sheet = Path(directory) / "malformed-sheet.xlsx"
+            write_malformed_sheet_xlsx(malformed_sheet)
+            with self.assertRaisesRegex(TotpLabError, "input_excel_invalid"):
+                build_totp_lab_challenge(self.config(directory, malformed_sheet), 1)
