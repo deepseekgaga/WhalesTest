@@ -99,18 +99,30 @@ class SliderLabRunner:
         self.config.screenshot_dir.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(self._screenshot_path(attempt)), full_page=True)
 
+    @staticmethod
+    def _wait_for_success(locator) -> bool:
+        try:
+            locator.wait_for(state="visible", timeout=5_000)
+        except Exception as error:
+            if type(error).__name__ == "TimeoutError":
+                return False
+            raise
+        return True
+
     def run_page(self, page) -> RunResult:
         last_error = "success_state_missing"
 
         for attempt in range(1, self.config.attempts + 1):
             page.goto(self.config.url, wait_until="networkidle")
+            validate_target(page.url)
             hook_result = page.evaluate(HOOK_SCRIPT, self._token)
 
             if isinstance(hook_result, dict) and hook_result.get("ok") is True:
                 page.reload(wait_until="networkidle")
-                success_visible = page.locator(
-                    self.config.success_selector,
-                ).is_visible(timeout=5_000)
+                validate_target(page.url)
+                success_visible = self._wait_for_success(
+                    page.locator(self.config.success_selector),
+                )
                 slider_missing = page.locator(self.config.slider_selector).count() == 0
                 if success_visible or slider_missing:
                     return RunResult(ok=True, attempts=attempt)
@@ -153,11 +165,15 @@ def run_with_browser(
                 context = browser.new_context()
                 page = context.new_page()
                 return runner.run_page(page)
+            except LabRunnerError:
+                raise
             except Exception:
                 return RunResult(ok=False, attempts=0, error="browser_error")
             finally:
                 _close_quietly(context)
                 _close_quietly(browser)
+    except LabRunnerError:
+        raise
     except Exception:
         _close_quietly(context)
         _close_quietly(browser)

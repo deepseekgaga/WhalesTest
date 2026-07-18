@@ -19,11 +19,12 @@ class FakeLocator:
         self.page = page
         self.selector = selector
 
-    def is_visible(self, timeout=0):
-        del timeout
+    def wait_for(self, *, state, timeout):
+        self.page.visibility_waits.append((self.selector, state, timeout))
         if self.selector != self.page.success_selector:
-            return False
-        return self.page.value_for(self.page.success_visible, False)
+            raise TimeoutError("not visible")
+        if not self.page.value_for(self.page.success_visible, False):
+            raise TimeoutError("not visible")
 
     def count(self):
         if self.selector != self.page.slider_selector:
@@ -38,19 +39,25 @@ class FakePage:
         hook_results,
         success_visible=None,
         slider_counts=None,
+        goto_urls=None,
+        reload_urls=None,
         success_selector=".captcha-success",
         slider_selector="#slider-handle",
     ):
         self.hook_results = hook_results
         self.success_visible = success_visible or []
         self.slider_counts = slider_counts or []
+        self.goto_urls = goto_urls or []
+        self.reload_urls = reload_urls or []
         self.success_selector = success_selector
         self.slider_selector = slider_selector
+        self.url = "about:blank"
         self.attempt_index = -1
         self.goto_calls = []
         self.reload_calls = []
         self.evaluated_tokens = []
         self.screenshots = []
+        self.visibility_waits = []
 
     def value_for(self, values, default):
         if not values:
@@ -60,6 +67,7 @@ class FakePage:
     def goto(self, url, *, wait_until):
         self.attempt_index += 1
         self.goto_calls.append((url, wait_until))
+        self.url = self.value_for(self.goto_urls, url)
 
     def evaluate(self, script, token):
         self.evaluated_tokens.append((script, token))
@@ -67,6 +75,7 @@ class FakePage:
 
     def reload(self, *, wait_until):
         self.reload_calls.append(wait_until)
+        self.url = self.value_for(self.reload_urls, self.url)
 
     def locator(self, selector):
         return FakeLocator(self, selector)
@@ -158,6 +167,29 @@ class TargetValidationTests(TestCase):
 
 
 class SliderLabRunnerTests(TestCase):
+    def test_redirected_page_is_rejected_before_the_token_is_used(self):
+        page = FakePage(
+            hook_results=[{"ok": True, "status": 200}],
+            goto_urls=["http://evil.test/token-capture"],
+        )
+
+        with self.assertRaisesRegex(LabRunnerError, "target_not_allowed"):
+            SliderLabRunner(RunnerConfig(), token="lab-token").run_page(page)
+
+        self.assertEqual(page.evaluated_tokens, [])
+
+    def test_reload_redirect_is_rejected_before_success_is_accepted(self):
+        page = FakePage(
+            hook_results=[{"ok": True, "status": 200}],
+            success_visible=[True],
+            reload_urls=["http://evil.test/fake-success"],
+        )
+
+        with self.assertRaisesRegex(LabRunnerError, "target_not_allowed"):
+            SliderLabRunner(RunnerConfig(), token="lab-token").run_page(page)
+
+        self.assertEqual(len(page.evaluated_tokens), 1)
+
     def test_hook_success_and_visible_success_element_finishes_once(self):
         page = FakePage(
             hook_results=[{"ok": True, "status": 200}],
@@ -171,6 +203,10 @@ class SliderLabRunnerTests(TestCase):
         self.assertEqual(len(page.goto_calls), 1)
         self.assertEqual(page.reload_calls, ["networkidle"])
         self.assertEqual(page.screenshots, [])
+        self.assertEqual(
+            page.visibility_waits,
+            [(".captcha-success", "visible", 5_000)],
+        )
 
     def test_missing_slider_is_accepted_when_success_element_is_absent(self):
         page = FakePage(
@@ -217,6 +253,23 @@ class SliderLabRunnerTests(TestCase):
 
 
 class CliTests(TestCase):
+    def test_security_boundary_errors_are_not_downgraded_to_browser_errors(self):
+        page = FakePage(
+            hook_results=[{"ok": True, "status": 200}],
+            goto_urls=["http://evil.test/token-capture"],
+        )
+        fake = FakePlaywright(page=page)
+
+        with self.assertRaisesRegex(LabRunnerError, "target_not_allowed"):
+            run_with_browser(
+                RunnerConfig(),
+                token="token",
+                playwright_factory=lambda: fake,
+            )
+
+        self.assertTrue(fake.context.closed)
+        self.assertTrue(fake.browser.closed)
+
     def test_missing_token_stops_before_browser_factory_is_called(self):
         called = False
 
