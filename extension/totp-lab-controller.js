@@ -99,13 +99,10 @@ export function createTotpLabController(api, options = {}) {
     port.onMessage.addListener((message) => {
       const request = pending.get(message.request_id);
       if (!request) return;
-      pending.delete(message.request_id);
-      clearTimeout(request.timer);
       request.resolve(message);
     });
     port.onDisconnect?.addListener?.(() => {
-      for (const request of pending.values()) {
-        clearTimeout(request.timer);
+      for (const request of [...pending.values()]) {
         request.reject(new Error("native_host_unavailable"));
       }
       pending.clear();
@@ -113,21 +110,45 @@ export function createTotpLabController(api, options = {}) {
     });
   }
 
-  function request(command, payload = {}) {
+  function request(command, payload = {}, signal) {
     connect();
     const requestId = makeId();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      if (signal?.aborted) {
+        reject(new Error("cancelled"));
+        return;
+      }
+      let timer;
+      const cleanup = () => {
+        clearTimeout(timer);
         pending.delete(requestId);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("cancelled"));
+      };
+      timer = setTimeout(() => {
+        cleanup();
         reject(new Error("native_host_timeout"));
       }, REQUEST_TIMEOUT_MS);
-      pending.set(requestId, { resolve, reject, timer });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      pending.set(requestId, {
+        resolve: (message) => {
+          cleanup();
+          resolve(message);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      });
       port.postMessage({ request_id: requestId, command, ...payload });
     });
   }
 
   function throwIfCancelled(run) {
-    if (run.abort.signal.aborted) throw new Error("cancelled");
+    if (active !== run || run.abort.signal.aborted) throw new Error("cancelled");
   }
 
   function abortable(promise, signal) {
@@ -297,7 +318,8 @@ export function createTotpLabController(api, options = {}) {
       run.state = "OPENING_HELPER";
       last = publicState(run);
 
-      const native = await request("get_totp_lab_challenge", { excel_row: excelRow });
+      const native = await request("get_totp_lab_challenge", { excel_row: excelRow }, run.abort.signal);
+      throwIfCancelled(run);
       if (native.ok !== true) throw new Error(native.error || "totp_lab_challenge_failed");
       const challengeUrl = validateChallengeUrl(native.challenge_url);
 
@@ -309,6 +331,7 @@ export function createTotpLabController(api, options = {}) {
       });
       if (!helperTab?.id) throw new Error("helper_tab_create_failed");
       run.helperTabId = helperTab.id;
+      throwIfCancelled(run);
 
       run.state = "WAITING_FOR_CODE";
       last = publicState(run);
@@ -325,7 +348,7 @@ export function createTotpLabController(api, options = {}) {
       run.state = "FILLING_TOTP";
       last = publicState(run);
 
-      const fillResults = await api.scripting.executeScript({
+      const fillResults = await abortable(api.scripting.executeScript({
         target: { tabId: incognitoTabId },
         world: "ISOLATED",
         func: fillTotpOnPage,
@@ -335,7 +358,7 @@ export function createTotpLabController(api, options = {}) {
           requireExistingToken: true,
           timeoutMs: FILL_TIMEOUT_MS,
         }],
-      });
+      }), run.abort.signal);
       throwIfCancelled(run);
       const fillResult = fillResults?.[0]?.result;
       if (!fillResult?.ok) throw new Error(fillResult?.error || "otp_page_action_failed");

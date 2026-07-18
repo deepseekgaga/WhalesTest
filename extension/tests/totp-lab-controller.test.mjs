@@ -41,6 +41,14 @@ function makeClock({ pause = false } = {}) {
   };
 }
 
+async function waitUntil(predicate) {
+  for (let i = 0; i < 20; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail("condition was not reached");
+}
+
 function makeChrome({
   motherTab = { id: 10, windowId: 1, index: 3, active: true, incognito: false },
   incognitoTab = { id: 20, windowId: 2, index: 1, active: false, incognito: true, activeTabGranted: true },
@@ -48,9 +56,12 @@ function makeChrome({
   helperReadPromise = null,
   helperStatuses = ["complete"],
   fillResult = { ok: true },
+  fillPromise = null,
   registerResult = { ok: true },
   cancelResult = { ok: true },
   challengeUrl = "http://totp-lab.local/encoded?test_hook=lab-hook",
+  delayNative = false,
+  delayCreate = false,
 } = {}) {
   const nativeMessages = [];
   const createdTabs = [];
@@ -61,6 +72,8 @@ function makeChrome({
   const motherMutations = [];
   const helperStatusChecks = [];
   let nativeListener;
+  let nativeMessageForRelease;
+  let releaseCreate;
   let helperStatusIndex = 0;
   let helperReadIndex = 0;
 
@@ -73,11 +86,13 @@ function makeChrome({
     postMessage(message) {
       nativeMessages.push(message);
       if (message.command !== "get_totp_lab_challenge") return;
-      queueMicrotask(() => nativeListener?.({
+      const respond = () => nativeListener?.({
         request_id: message.request_id,
         ok: true,
         challenge_url: challengeUrl,
-      }));
+      });
+      if (delayNative) nativeMessageForRelease = respond;
+      else queueMicrotask(respond);
     },
   };
 
@@ -90,6 +105,14 @@ function makeChrome({
     targetExecutions,
     motherMutations,
     helperStatusChecks,
+    releaseNative() {
+      nativeMessageForRelease?.();
+      nativeMessageForRelease = null;
+    },
+    releaseCreate() {
+      releaseCreate?.();
+      releaseCreate = null;
+    },
     runtime: {
       id: "ext",
       connectNative() {
@@ -111,8 +134,16 @@ function makeChrome({
       async create(details) {
         createdTabs.push(details);
         const helperTab = { id: 30, windowId: details.windowId, index: details.index, active: details.active, incognito: false, url: details.url };
-        tabsById.set(helperTab.id, helperTab);
-        return helperTab;
+        if (!delayCreate) {
+          tabsById.set(helperTab.id, helperTab);
+          return helperTab;
+        }
+        return new Promise((resolve) => {
+          releaseCreate = () => {
+            tabsById.set(helperTab.id, helperTab);
+            resolve(helperTab);
+          };
+        });
       },
       async remove(tabId) {
         removedTabs.push(tabId);
@@ -130,7 +161,7 @@ function makeChrome({
             if (!incognitoTab.activeTabGranted) throw new Error("incognito_active_tab_required");
             return [{ result: registerResult }];
           }
-          if (details.func.name === "fillTotpOnPage") return [{ result: fillResult }];
+          if (details.func.name === "fillTotpOnPage") return fillPromise ?? [{ result: fillResult }];
           if (details.func.name === "cancelTotpOnPage") return [{ result: cancelResult }];
         }
         if (details.target.tabId === motherTab.id) return [{ result: { ok: true } }];
@@ -281,10 +312,7 @@ test("cancel aborts a pending helper read and cleans up the helper", async () =>
   const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
   const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
-  for (let i = 0; chrome.helperExecutions.length === 0 && i < 10; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  assert.equal(chrome.helperExecutions.length, 1);
+  await waitUntil(() => chrome.helperExecutions.length === 1);
   assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
   const result = await Promise.race([
     running,
@@ -294,6 +322,61 @@ test("cancel aborts a pending helper read and cleans up the helper", async () =>
   assert.deepEqual(result, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
   assert.deepEqual(chrome.removedTabs, [30]);
   assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "fillTotpOnPage"), false);
+});
+
+test("cancel while native challenge is pending prevents late helper creation", async () => {
+  const chrome = makeChrome({ delayNative: true });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => chrome.nativeMessages.length === 1);
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(await Promise.race([
+    running,
+    new Promise((resolve) => setTimeout(() => resolve({ state: "HUNG" }), 100)),
+  ]), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  chrome.releaseNative();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(chrome.createdTabs.length, 0);
+  assert.deepEqual(chrome.removedTabs, []);
+  assert.deepEqual(chrome.reloadedTabs, []);
+});
+
+test("cancel while helper creation is pending removes the late helper exactly once", async () => {
+  const chrome = makeChrome({ delayCreate: true });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => chrome.createdTabs.length === 1);
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  chrome.releaseCreate();
+  const result = await Promise.race([
+    running,
+    new Promise((resolve) => setTimeout(() => resolve({ state: "HUNG" }), 100)),
+  ]);
+
+  assert.deepEqual(result, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.equal(chrome.helperExecutions.length, 0);
+  assert.deepEqual(chrome.reloadedTabs, []);
+});
+
+test("cancel while fill is pending settles cancelled promptly", async () => {
+  const chrome = makeChrome({ fillPromise: new Promise(() => {}) });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await waitUntil(() => chrome.targetExecutions.some((entry) => entry.func.name === "fillTotpOnPage"));
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  const result = await Promise.race([
+    running,
+    new Promise((resolve) => setTimeout(() => resolve({ state: "HUNG" }), 100)),
+  ]);
+
+  assert.deepEqual(result, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.reloadedTabs, []);
 });
 
 test("returns request_invalid for identical mother and target tab ids without creating a helper", async () => {
