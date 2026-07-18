@@ -18,7 +18,10 @@ $requiredFiles = @(
   'totp-controller.js',
   'totp-page.js',
   'totp-lab-controller.js',
-  'totp-lab-page.js'
+  'totp-lab-page.js',
+  'sms-lab-selectors.js',
+  'sms-lab-page.js',
+  'sms-lab-controller.js'
 )
 
 if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {

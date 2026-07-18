@@ -1,5 +1,6 @@
 import { createTotpController } from "./totp-controller.js";
 import { createTotpLabController } from "./totp-lab-controller.js";
+import { createSmsLabController } from "./sms-lab-controller.js";
 
 const HOST_NAME = "com.whalestest.cc_batch";
 const DOWNLOAD_SUBDIRECTORY = "jingshajingsha/txt保存";
@@ -241,16 +242,47 @@ function safeRouteError(error, fallback = "totp_route_failed") {
   return /^[a-z][a-z0-9_]{1,64}$/.test(value) ? value : fallback;
 }
 
-export function createExtensionRuntime(api) {
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && typeof value !== "boolean" && value >= 1;
+}
+
+function hasExactKeys(message, allowedKeys) {
+  const keys = Object.keys(message ?? {});
+  return keys.length > 0 && keys.every((key) => allowedKeys.has(key));
+}
+
+export function createExtensionRuntime(api, options = {}) {
   const batchController = createBatchController(api);
   const totpController = createTotpController(api);
   const totpLabController = createTotpLabController(api);
+  const smsLabController = createSmsLabController(api, options.smsLab ?? {});
   const allowedTotpLabKeys = new Set(["type", "motherTabId", "incognitoTabId", "excelRow"]);
+  const allowedSmsLabRunKeys = new Set(["type", "motherTabId", "incognitoTabId", "excelRow"]);
+  const allowedSmsLabCancelKeys = new Set(["type", "runId"]);
+  const allowedSmsLabStateKeys = new Set(["type"]);
 
   function validateTotpLabMessage(message) {
     const keys = Object.keys(message ?? {});
     if (keys.some((key) => !allowedTotpLabKeys.has(key))) return false;
     return Number.isInteger(message?.motherTabId) && Number.isInteger(message?.incognitoTabId) && Number.isInteger(message?.excelRow);
+  }
+
+  function validateSmsLabRunMessage(message) {
+    return hasExactKeys(message, allowedSmsLabRunKeys) &&
+      isPositiveInteger(message?.motherTabId) &&
+      isPositiveInteger(message?.incognitoTabId) &&
+      Number.isInteger(message?.excelRow) &&
+      typeof message.excelRow !== "boolean" &&
+      message.excelRow >= 2;
+  }
+
+  function validateSmsLabCancelMessage(message) {
+    return hasExactKeys(message, allowedSmsLabCancelKeys) &&
+      (!Object.hasOwn(message, "runId") || isPositiveInteger(message.runId));
+  }
+
+  function validateSmsLabStateMessage(message) {
+    return hasExactKeys(message, allowedSmsLabStateKeys);
   }
 
   const listener = (message, sender, sendResponse) => {
@@ -295,6 +327,38 @@ export function createExtensionRuntime(api) {
       sendResponse({ ok: true, result: totpLabController.getState() });
       return false;
     }
+    if (message?.type === "run_sms_lab" || message?.type === "cancel_sms_lab" || message?.type === "sms_lab_state") {
+      if (sender?.id !== api.runtime.id) {
+        sendResponse({ ok: false, error: "sender_rejected" });
+        return false;
+      }
+      if (message.type === "run_sms_lab") {
+        if (!validateSmsLabRunMessage(message)) {
+          sendResponse({ ok: false, error: "request_invalid" });
+          return false;
+        }
+        void smsLabController.run(message)
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "sms_lab_route_failed") }));
+        return true;
+      }
+      if (message.type === "cancel_sms_lab") {
+        if (!validateSmsLabCancelMessage(message)) {
+          sendResponse({ ok: false, error: "request_invalid" });
+          return false;
+        }
+        void smsLabController.cancel(message.runId)
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "sms_lab_route_failed") }));
+        return true;
+      }
+      if (!validateSmsLabStateMessage(message)) {
+        sendResponse({ ok: false, error: "request_invalid" });
+        return false;
+      }
+      sendResponse({ ok: true, result: smsLabController.getState() });
+      return false;
+    }
     if (message?.type === "start") {
       void batchController.start();
       sendResponse(batchController.getState());
@@ -307,7 +371,7 @@ export function createExtensionRuntime(api) {
     return false;
   };
   api.runtime.onMessage.addListener(listener);
-  return { batchController, totpController, totpLabController, listener };
+  return { batchController, totpController, totpLabController, smsLabController, listener };
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {
