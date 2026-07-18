@@ -129,3 +129,70 @@ class HostProtocolTests(unittest.TestCase):
         })
         self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
         self.assertNotIn("sensitive", str(result))
+
+    def test_get_sms_lab_challenge_returns_only_phone_and_url_from_exact_row(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "accounts.xlsx"
+            write_xlsx(
+                input_path,
+                [
+                    ["header", "", "", "Phone", "SMS URL"],
+                    ["alice", "", "", "+1 555 0100", "http://sms-lab.local/challenge?id=abc%201"],
+                ],
+            )
+            config_path = self._write_totp_config(directory, input_path)
+
+            result = HostApplication(config_path).dispatch({
+                "command": "get_sms_lab_challenge",
+                "excel_row": 2,
+            })
+
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "phone": "+1 555 0100",
+                    "challenge_url": "http://sms-lab.local/challenge?id=abc%201",
+                },
+            )
+
+    def test_get_sms_lab_challenge_rejects_invalid_rows_without_echoing_sensitive_fields(self):
+        sensitive_message = {
+            "command": "get_sms_lab_challenge",
+            "phone": "+1 555 9999",
+            "code": "123456",
+            "url": "http://sms-lab.local/secret",
+        }
+        for excel_row in ("2", True, None, 2.0):
+            with self.subTest(excel_row=excel_row):
+                result = HostApplication("unused.json").dispatch(sensitive_message | {"excel_row": excel_row})
+                self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+                self.assertNotIn("phone", result)
+                self.assertNotIn("code", result)
+                self.assertNotIn("url", result)
+                self.assertNotIn("+1 555 9999", str(result))
+                self.assertNotIn("123456", str(result))
+                self.assertNotIn("secret", str(result))
+
+    def test_get_sms_lab_challenge_builder_errors_are_nonfatal(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "accounts.xlsx"
+            write_xlsx(input_path, [["header", "", "", "Phone", "SMS URL"], ["alice", "", "", "+1 555 0100", "https://example.test/challenge"]])
+            config_path = self._write_totp_config(directory, input_path)
+
+            external_url = HostApplication(config_path).dispatch({"command": "get_sms_lab_challenge", "excel_row": 2})
+            missing_row = HostApplication(config_path).dispatch({"command": "get_sms_lab_challenge", "excel_row": 3})
+
+            self.assertEqual(external_url, {"ok": False, "error": "sms_url_invalid", "fatal": False})
+            self.assertEqual(missing_row, {"ok": False, "error": "account_row_not_found", "fatal": False})
+
+    def test_get_sms_lab_challenge_config_errors_are_nonfatal_input_errors(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            result = HostApplication(Path(directory_name) / "missing-config.json").dispatch({
+                "command": "get_sms_lab_challenge",
+                "excel_row": 2,
+            })
+
+            self.assertEqual(result, {"ok": False, "error": "input_excel_invalid", "fatal": False})

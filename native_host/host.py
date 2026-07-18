@@ -11,6 +11,7 @@ from native_host.cc_batch.account_totp import AccountTotpError, find_totp_secret
 from native_host.cc_batch.config import ConfigError, load_config
 from native_host.cc_batch.processor import BatchPlan, BatchProcessor, PlannedTask, ProcessorFatal
 from native_host.cc_batch.protocol import ProtocolError, read_message, write_message
+from native_host.cc_batch.sms_lab import SmsLabError, build_sms_lab_challenge
 from native_host.cc_batch.totp import TotpError, generate_totp
 from native_host.cc_batch.totp_lab import TotpLabError, build_totp_lab_challenge
 
@@ -56,6 +57,19 @@ class HostApplication:
         except ConfigError:
             return {"ok": False, "error": "input_excel_invalid", "fatal": False}
 
+    def _get_sms_lab_challenge(self, message: dict[str, Any]) -> dict[str, Any]:
+        excel_row = message.get("excel_row")
+        if isinstance(excel_row, bool) or not isinstance(excel_row, int):
+            return {"ok": False, "error": "request_invalid", "fatal": False}
+        try:
+            config = load_config(self.config_path)
+            challenge = build_sms_lab_challenge(config, excel_row)
+            return {"ok": True, "phone": challenge.phone, "challenge_url": challenge.challenge_url}
+        except SmsLabError as exc:
+            return {"ok": False, "error": exc.code, "fatal": False}
+        except ConfigError:
+            return {"ok": False, "error": "input_excel_invalid", "fatal": False}
+
     def dispatch(self, message: dict[str, Any]) -> dict[str, Any]:
         command = message.get("command")
         if command == "ping":
@@ -64,6 +78,8 @@ class HostApplication:
             return self._get_totp(message)
         if command == "get_totp_lab_challenge":
             return self._get_totp_lab_challenge(message)
+        if command == "get_sms_lab_challenge":
+            return self._get_sms_lab_challenge(message)
         if command not in {"preflight", "prepare_batch", "process_result", "get_state", "finish_batch"}:
             return {"ok": False, "error": "unknown_command"}
         try:
