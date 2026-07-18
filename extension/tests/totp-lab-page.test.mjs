@@ -62,6 +62,52 @@ test("returns helper_page_not_stable when the page never reaches a stable comple
   assert.deepEqual(await readVisibleTotpCode({ timeoutMs: 250, quietMs: 50, sampleGapMs: 50 }, env), { ok: false, error: "helper_page_not_stable" });
 });
 
+test("returns helper_page_not_stable when mutations never allow the quiet window to complete", async () => {
+  const observers = [];
+  class BusyMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+    observe() {
+      this.timer = setInterval(() => this.callback(), 5);
+    }
+    disconnect() {
+      this.disconnected = true;
+      clearInterval(this.timer);
+    }
+  }
+  const env = stableEnvironment({ text: "Lab code 123456" });
+  env.document.documentElement = {};
+  env.MutationObserver = BusyMutationObserver;
+  delete env.waitForQuiet;
+  delete env.sleep;
+
+  try {
+    const result = await Promise.race([
+      readVisibleTotpCode({ timeoutMs: 50, quietMs: 30, sampleGapMs: 5 }, env),
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "hung" }), 250)),
+    ]);
+    assert.deepEqual(result, { ok: false, error: "helper_page_not_stable" });
+    assert.ok(observers.every((observer) => observer.disconnected));
+  } finally {
+    for (const observer of observers) observer.disconnect();
+  }
+});
+
+test("does not return a visible code while document readiness is still loading", async () => {
+  let clock = 0;
+  const env = stableEnvironment({
+    text: "Lab code 123456",
+    readyState: "loading",
+    now: () => clock,
+    waitForQuiet: async () => { clock += 50; },
+    sleep: async () => { clock += 50; },
+  });
+  assert.deepEqual(await readVisibleTotpCode({ timeoutMs: 120, quietMs: 40, sampleGapMs: 20 }, env), { ok: false, error: "helper_page_not_stable" });
+});
+
 test("returns cancelled when aborted while waiting", async () => {
   const abortError = new DOMException("Aborted", "AbortError");
   const env = stableEnvironment({

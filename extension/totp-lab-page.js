@@ -2,21 +2,27 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
   const documentObject = env.document ?? globalThis.document;
   const now = env.now ?? Date.now;
   const signal = env.signal;
+  const abortError = () => new DOMException("Aborted", "AbortError");
   const sleep = env.sleep ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
-      reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
+      reject(abortSignal.reason ?? abortError());
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    const cleanup = () => abortSignal?.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
+      cleanup();
+      reject(abortSignal.reason ?? abortError());
     };
     abortSignal?.addEventListener("abort", onAbort, { once: true });
   }));
   const waitForQuiet = env.waitForQuiet ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
-      reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
+      reject(abortSignal.reason ?? abortError());
       return;
     }
     const MutationObserverCtor = env.MutationObserver ?? globalThis.MutationObserver;
@@ -37,7 +43,7 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
     const done = () => { cleanup(); resolve(); };
     const onAbort = () => {
       cleanup();
-      reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
+      reject(abortSignal.reason ?? abortError());
     };
     observer.observe(documentObject.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -45,7 +51,33 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
   }));
 
   const started = now();
-  const withinDeadline = () => now() - started < timeoutMs;
+  const remainingMs = () => timeoutMs - (now() - started);
+  const withinDeadline = () => remainingMs() > 0;
+  const waitWithDeadline = async (operation) => {
+    const remaining = remainingMs();
+    if (remaining <= 0) return false;
+    if (signal?.aborted) return "aborted";
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal.reason ?? abortError());
+    let timer;
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const operationPromise = operation(controller.signal);
+    operationPromise.catch(() => {});
+    try {
+      return await Promise.race([
+        operationPromise.then(() => true),
+        new Promise((resolve) => {
+          timer = setTimeout(() => {
+            resolve(false);
+            controller.abort(abortError());
+          }, remaining);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  };
   const readSample = () => {
     const bodyText = documentObject?.body?.innerText;
     return {
@@ -64,11 +96,15 @@ export async function readVisibleTotpCode({ timeoutMs = 15_000, quietMs = 800, s
   try {
     while (withinDeadline()) {
       if (signal?.aborted) return { ok: false, error: "cancelled" };
-      await waitForQuiet(quietMs, signal);
+      const quiet = await waitWithDeadline((deadlineSignal) => waitForQuiet(quietMs, deadlineSignal));
+      if (quiet === "aborted") return { ok: false, error: "cancelled" };
+      if (!quiet) break;
       if (!withinDeadline()) break;
       const first = readSample();
       if (first.readyState !== "complete") continue;
-      await sleep(sampleGapMs, signal);
+      const slept = await waitWithDeadline((deadlineSignal) => sleep(sampleGapMs, deadlineSignal));
+      if (slept === "aborted") return { ok: false, error: "cancelled" };
+      if (!slept) break;
       if (!withinDeadline()) break;
       const second = readSample();
       if (second.readyState === "complete" && first.text === second.text) {
