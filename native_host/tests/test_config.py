@@ -125,3 +125,9 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError) as caught:
             load_config(path)
         self.assertEqual(str(caught.exception), "invalid_totp_lab_test_hook")
+
+    def test_repo_config_uses_the_local_totp_lab_settings(self):
+        config = load_config(Path("native_host/config.json"))
+        self.assertEqual(str(config.input_excel), r"C:\Users\HE\Downloads\jingshajingsha\cc汇总.xlsx")
+        self.assertEqual(config.totp_lab_url, "http://totp-lab.local/")
+        self.assertEqual(config.totp_lab_test_hook, "__FILL_TOTP_TEST_HOOK__")

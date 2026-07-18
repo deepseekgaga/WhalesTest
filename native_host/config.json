@@ -1,0 +1,22 @@
+{
+  "input_excel": "C:\\Users\\HE\\Downloads\\jingshajingsha\\cc汇总.xlsx",
+  "url_column": "CC地址",
+  "txt_directory": "C:\\Users\\HE\\Downloads\\jingshajingsha\\txt保存",
+  "download_directory": "C:\\Users\\HE\\Downloads\\jingshajingsha\\txt保存",
+  "output_excel": "C:\\Users\\HE\\Downloads\\jingshajingsha\\cc汇总.xlsx",
+  "download_timeout_seconds": 180,
+  "field_mappings": {
+    "A": "账户",
+    "B": "密码",
+    "C": "2FA 密钥",
+    "D": "邮箱接码地址"
+  },
+  "field_continuation_lines": {
+    "A": 0,
+    "B": 0,
+    "C": 0,
+    "D": 1
+  },
+  "totp_lab_url": "http://totp-lab.local/",
+  "totp_lab_test_hook": "__FILL_TOTP_TEST_HOOK__"
+}
