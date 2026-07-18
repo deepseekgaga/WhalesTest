@@ -1,4 +1,5 @@
 import { createTotpController } from "./totp-controller.js";
+import { createTotpLabController } from "./totp-lab-controller.js";
 
 const HOST_NAME = "com.whalestest.cc_batch";
 const DOWNLOAD_SUBDIRECTORY = "jingshajingsha/txt保存";
@@ -243,6 +244,15 @@ function safeRouteError(error, fallback = "totp_route_failed") {
 export function createExtensionRuntime(api) {
   const batchController = createBatchController(api);
   const totpController = createTotpController(api);
+  const totpLabController = createTotpLabController(api);
+  const allowedTotpLabKeys = new Set(["type", "motherTabId", "incognitoTabId", "excelRow"]);
+
+  function validateTotpLabMessage(message) {
+    const keys = Object.keys(message ?? {});
+    if (keys.some((key) => !allowedTotpLabKeys.has(key))) return false;
+    return Number.isInteger(message?.motherTabId) && Number.isInteger(message?.incognitoTabId) && Number.isInteger(message?.excelRow);
+  }
+
   const listener = (message, sender, sendResponse) => {
     if (message?.type === "run_totp" || message?.type === "cancel_totp") {
       const senderMatchesTarget = message.tabId == null || sender?.tab?.id == null || sender.tab.id === message.tabId;
@@ -261,6 +271,30 @@ export function createExtensionRuntime(api) {
         .catch((error) => sendResponse({ ok: false, error: safeRouteError(error) }));
       return true;
     }
+    if (message?.type === "run_totp_lab" || message?.type === "cancel_totp_lab" || message?.type === "totp_lab_state") {
+      if (sender?.id !== api.runtime.id) {
+        sendResponse({ ok: false, error: "sender_rejected" });
+        return false;
+      }
+      if (message.type === "run_totp_lab") {
+        if (!validateTotpLabMessage(message)) {
+          sendResponse({ ok: false, error: "request_invalid" });
+          return false;
+        }
+        void totpLabController.run(message)
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error) }));
+        return true;
+      }
+      if (message.type === "cancel_totp_lab") {
+        void totpLabController.cancel(message.runId)
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error) }));
+        return true;
+      }
+      sendResponse({ ok: true, result: totpLabController.getState() });
+      return false;
+    }
     if (message?.type === "start") {
       void batchController.start();
       sendResponse(batchController.getState());
@@ -273,7 +307,7 @@ export function createExtensionRuntime(api) {
     return false;
   };
   api.runtime.onMessage.addListener(listener);
-  return { batchController, totpController, listener };
+  return { batchController, totpController, totpLabController, listener };
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {

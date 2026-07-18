@@ -396,5 +396,5 @@ export function createTotpLabController(api, options = {}) {
     return { ...last };
   }
 
-  return { run, cancel };
+  return { run, cancel, getState: () => ({ ...last }) };
 }

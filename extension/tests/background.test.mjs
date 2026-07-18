@@ -61,6 +61,95 @@ function makeChrome(options = {}) {
   return api;
 }
 
+function makeLabChrome({
+  motherTab = { id: 10, windowId: 1, index: 3, active: true, incognito: false },
+  targetTab = { id: 20, windowId: 2, index: 1, active: true, incognito: true, activeTabGranted: true },
+  helperReadResult = { ok: true, code: "123456" },
+  challengeUrl = "http://totp-lab.local/encoded?test_hook=lab-hook",
+} = {}) {
+  const nativeMessages = [];
+  const executions = [];
+  const createdTabs = [];
+  const removedTabs = [];
+  const reloadedTabs = [];
+  const tabsById = new Map();
+  if (motherTab) tabsById.set(motherTab.id, motherTab);
+  if (targetTab) tabsById.set(targetTab.id, targetTab);
+  let nativeListener;
+  const port = {
+    onMessage: { addListener(listener) { nativeListener = listener; } },
+    onDisconnect: { addListener() {} },
+    postMessage(message) {
+      nativeMessages.push(message);
+      if (message.command !== "get_totp_lab_challenge") return;
+      queueMicrotask(() => nativeListener?.({
+        request_id: message.request_id,
+        ok: true,
+        challenge_url: challengeUrl,
+      }));
+    },
+  };
+  const api = {
+    nativeMessages,
+    executions,
+    createdTabs,
+    removedTabs,
+    reloadedTabs,
+    runtime: {
+      id: "ext",
+      onMessage: { addListener(listener) { api.messageListener = listener; } },
+      connectNative() {
+        return port;
+      },
+    },
+    tabs: {
+      async get(tabId) {
+        const tab = tabsById.get(tabId);
+        if (!tab) return null;
+        return tab.id === 30 ? { ...tab, status: "complete" } : tab;
+      },
+      async create(details) {
+        createdTabs.push(details);
+        const helperTab = { id: 30, windowId: details.windowId, index: details.index, active: details.active, incognito: false, url: details.url, status: "complete" };
+        tabsById.set(helperTab.id, helperTab);
+        return helperTab;
+      },
+      async remove(tabId) {
+        removedTabs.push(tabId);
+        tabsById.delete(tabId);
+      },
+      async reload(tabId) {
+        reloadedTabs.push(tabId);
+      },
+    },
+    scripting: {
+      async executeScript(details) {
+        executions.push(details);
+        if (details.target.tabId === targetTab.id) {
+          if (details.func.name === "registerTotpOnPage") {
+            if (!targetTab.activeTabGranted) throw new Error("incognito_active_tab_required");
+            return [{ result: { ok: true } }];
+          }
+          if (details.func.name === "fillTotpOnPage") return [{ result: { ok: true } }];
+          if (details.func.name === "cancelTotpOnPage") return [{ result: { ok: true } }];
+        }
+        if (details.target.tabId === 30) return [{ result: helperReadResult }];
+        return [{ result: { ok: true } }];
+      },
+    },
+    downloads: {
+      onCreated: { addListener() {} },
+      onChanged: { addListener() {} },
+      onDeterminingFilename: { addListener() {} },
+      async download() { return 1; },
+      async search() { return []; },
+    },
+    storage: { local: { async set() {}, async get() { return {}; } } },
+    action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} },
+  };
+  return api;
+}
+
 async function waitFor(predicate, timeout = 500) {
   const started = Date.now();
   while (!predicate()) {
@@ -132,11 +221,73 @@ test("suggests the configured subdirectory for active ZIP downloads", async () =
   await run;
 });
 
-test("declares only the minimal active-tab and scripting permissions for TOTP", async () => {
+test("declares only the fixed TOTP Lab host plus minimal TOTP permissions", async () => {
   const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
   assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting"]);
-  assert.equal("host_permissions" in manifest, false);
+  assert.deepEqual(manifest.host_permissions, ["http://totp-lab.local/*"]);
   assert.equal(JSON.stringify(manifest).includes("<all_urls>"), false);
+});
+
+test("routes run_totp_lab through the native host and injects into the requested tab", async () => {
+  const chrome = makeLabChrome();
+  createExtensionRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener(
+      { type: "run_totp_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2 },
+      { id: "ext" },
+      resolve,
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.state, "SUCCEEDED");
+  assert.equal(chrome.nativeMessages[0].command, "get_totp_lab_challenge");
+  assert.deepEqual(chrome.executions.map((entry) => entry.func.name), ["registerTotpOnPage", "readVisibleTotpCode", "fillTotpOnPage"]);
+});
+
+test("rejects caller-supplied challenge URLs or secrets", async () => {
+  const chrome = makeLabChrome();
+  createExtensionRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener(
+      { type: "run_totp_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2, challengeUrl: "secret", code: "123456" },
+      { id: "ext" },
+      resolve,
+    );
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.deepEqual(response, { ok: false, error: "request_invalid" });
+});
+
+test("exposes non-sensitive TOTP Lab state", async () => {
+  const chrome = makeLabChrome();
+  createExtensionRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener({ type: "totp_lab_state" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.deepEqual(response, { ok: true, result: { state: "IDLE", runId: null, error: "" } });
+});
+
+test("allows cancelling a TOTP Lab run when only the run id is supplied", async () => {
+  const chrome = makeLabChrome();
+  createExtensionRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener({ type: "cancel_totp_lab", runId: "run-1" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.state, "IDLE");
+});
+
+test("packages the TOTP Lab controller and page files", async () => {
+  const script = await readFile(new URL("../../scripts/package-extension.ps1", import.meta.url), "utf8");
+  assert.equal(script.includes("totp-lab-controller.js"), true);
+  assert.equal(script.includes("totp-lab-page.js"), true);
 });
 
 test("routes run_totp through the native host and injects into the requested tab", async () => {

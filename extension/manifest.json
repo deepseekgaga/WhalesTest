@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "description": "在授权测试环境中按 Excel 顺序下载 ZIP 并汇总 TXT 字段。",
   "permissions": ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting"],
+  "host_permissions": ["http://totp-lab.local/*"],
   "action": {
     "default_title": "执行 CC 批量任务",
     "default_popup": "popup.html"
