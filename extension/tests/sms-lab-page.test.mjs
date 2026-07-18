@@ -463,7 +463,7 @@ test("registered SMS request actions can be cancelled before clicking", async ()
       { runId: "run-request", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
       stableEnv({ document }),
     ),
-    { ok: false, error: "cancelled" },
+    { ok: false, error: "sms_page_context_reset" },
   );
 });
 
@@ -474,7 +474,7 @@ test("SMS page activeTab probe is self-contained and does not create a run token
       { runId: "probe-only", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
       stableEnv({ document: createDocument() }),
     ),
-    { ok: false, error: "cancelled" },
+    { ok: false, error: "sms_page_context_reset" },
   );
 });
 
@@ -513,7 +513,33 @@ test("registered SMS submit actions can be cancelled before submitting", async (
       { runId: "run-submit", requireExistingToken: true, code: "123456", selectors: configuredSelectors, timeoutMs: 100 },
       stableEnv({ document }),
     ),
-    { ok: false, error: "cancelled" },
+    { ok: false, error: "sms_page_context_reset" },
+  );
+});
+
+test("missing SMS page run token reports context reset instead of cancellation", async () => {
+  const document = createDocument({
+    elements: {
+      [configuredSelectors.phoneInput]: createElement(),
+      [configuredSelectors.sendButton]: createElement({ tagName: "button" }),
+      [configuredSelectors.codeInput]: createElement(),
+      [configuredSelectors.submitButton]: createElement({ tagName: "button" }),
+    },
+  });
+
+  assert.deepEqual(
+    await requestSmsOnPage(
+      { runId: "missing-request", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
+    { ok: false, error: "sms_page_context_reset" },
+  );
+  assert.deepEqual(
+    await submitSmsCodeOnPage(
+      { runId: "missing-submit", requireExistingToken: true, code: "123456", selectors: configuredSelectors, timeoutMs: 100 },
+      stableEnv({ document }),
+    ),
+    { ok: false, error: "sms_page_context_reset" },
   );
 });
 
@@ -545,7 +571,7 @@ test("registered SMS tokens are cleaned up after page action success and failure
       { runId: "cleanup-request", requireExistingToken: true, phone: "555", selectors: configuredSelectors, timeoutMs: 100 },
       stableEnv({ document: requestDocument }),
     ),
-    { ok: false, error: "cancelled" },
+    { ok: false, error: "sms_page_context_reset" },
   );
 
   assert.deepEqual(registerSmsOnPage({ runId: "cleanup-submit" }), { ok: true });
@@ -568,7 +594,7 @@ test("registered SMS tokens are cleaned up after page action success and failure
       { runId: "cleanup-submit", requireExistingToken: true, code: "123456", selectors: configuredSelectors, timeoutMs: 100 },
       stableEnv({ document: missingInputDocument }),
     ),
-    { ok: false, error: "cancelled" },
+    { ok: false, error: "sms_page_context_reset" },
   );
 });
 

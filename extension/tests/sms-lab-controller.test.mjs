@@ -376,6 +376,22 @@ test("request registration is cancelled when request executeScript rejects befor
   ]);
 });
 
+test("SMS page context reset after registration fails the run without marking cancelled", async () => {
+  const chrome = makeChrome({ requestResult: { ok: false, error: "sms_page_context_reset" } });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_page_context_reset" });
+  assert.deepEqual(controller.getState(), { state: "FAILED", runId: "run-1", error: "sms_page_context_reset" });
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
+    "registerSmsOnPage",
+    "requestSmsOnPage",
+    "cancelSmsOnPage",
+  ]);
+});
+
 test("removes the helper and fails when the helper redirects before reading", async () => {
   const chrome = makeChrome({
     helperUrlChanges: ["http://evil.example/challenge"],

@@ -50,7 +50,7 @@ export async function requestSmsOnPage({ runId, requireExistingToken = false, ph
   const cleanupToken = () => {
     if (requireExistingToken && typeof runId === "string") globalThis[registryKey]?.delete?.(runId);
   };
-  if (requireExistingToken && !signal) return { ok: false, error: "cancelled" };
+  if (requireExistingToken && !signal) return { ok: false, error: "sms_page_context_reset" };
   const sleep = env.sleep ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
       reject(abortSignal.reason ?? abortError());
@@ -275,7 +275,7 @@ export async function submitSmsCodeOnPage({ runId, requireExistingToken = false,
   const cleanupToken = () => {
     if (requireExistingToken && typeof runId === "string") globalThis[registryKey]?.delete?.(runId);
   };
-  if (requireExistingToken && !signal) return { ok: false, error: "cancelled" };
+  if (requireExistingToken && !signal) return { ok: false, error: "sms_page_context_reset" };
   const sleep = env.sleep ?? ((ms, abortSignal) => new Promise((resolve, reject) => {
     if (abortSignal?.aborted) {
       reject(abortSignal.reason ?? abortError());
