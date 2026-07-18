@@ -14,15 +14,18 @@ from native_host.tests.xlsx_fixture import write_xlsx
 
 
 class HostProtocolTests(unittest.TestCase):
-    def _write_totp_config(self, directory: Path, input_path: Path) -> Path:
+    def _write_totp_config(self, directory: Path, input_path: Path, extra: dict[str, object] | None = None) -> Path:
         config_path = directory / "config.json"
-        config_path.write_text(json.dumps({
+        payload = {
             "input_excel": str(input_path),
             "url_column": "CC地址",
             "txt_directory": str(directory / "txt"),
             "output_excel": str(directory / "summary.xlsx"),
             "field_mappings": {"A": "", "B": "", "C": "", "D": ""},
-        }, ensure_ascii=False), encoding="utf-8")
+        }
+        if extra:
+            payload.update(extra)
+        config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return config_path
 
     def test_ping_returns_ok_without_touching_workbook(self):
@@ -98,3 +101,31 @@ class HostProtocolTests(unittest.TestCase):
         result = app.dispatch({"command": "get_totp", "username": 7, "password": "secret"})
         self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
         self.assertNotIn("secret", str(result))
+
+    def test_get_totp_lab_challenge_returns_only_the_constructed_url(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "accounts.xlsx"
+            write_xlsx(input_path, [["header", "", ""], ["alice", "pass", "JBSWY3D/测试"]])
+            config_path = self._write_totp_config(
+                directory,
+                input_path,
+                {"totp_lab_url": "http://totp-lab.local/", "totp_lab_test_hook": "lab-hook"},
+            )
+            result = HostApplication(config_path).dispatch({"command": "get_totp_lab_challenge", "excel_row": 2})
+            self.assertEqual(
+                result,
+                {
+                    "ok": True,
+                    "challenge_url": "http://totp-lab.local/JBSWY3D%2F%E6%B5%8B%E8%AF%95?test_hook=lab-hook",
+                },
+            )
+
+    def test_get_totp_lab_challenge_rejects_invalid_requests_without_echoing_values(self):
+        result = HostApplication("unused.json").dispatch({
+            "command": "get_totp_lab_challenge",
+            "excel_row": "2",
+            "secret": "sensitive",
+        })
+        self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+        self.assertNotIn("sensitive", str(result))
