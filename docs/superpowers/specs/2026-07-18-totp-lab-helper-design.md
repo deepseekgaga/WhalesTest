@@ -8,7 +8,21 @@
 
 本阶段只实现该 TOTP 辅助流程。账号密码登录、母页取链接、手机接码、“接受”按钮、结果 URL 回填和循环调度均留给后续模块。
 
-## 2. 安全边界
+## 2. 上层循环契约（本阶段不实现）
+
+后续完整工作流必须遵守以下顺序约束：
+
+1. 母页 tab 在普通窗口中始终保持 `active: true`；即使无痕窗口获得焦点，也不能在母页窗口激活其他 tab。
+2. 每轮任务开始时，从母页提取一个新的随机链接。
+3. 随机链接的内容不用于查找账号；第 N 次取得的链接严格对应 Excel 中第 N 个数据行。
+4. Excel 第 1 行是表头，从第 2 行开始顺序读取。
+5. 登录、TOTP、手机验证、“接受”按钮、最终 URL 回填母页全部成功后，才允许推进到下一行并从母页取得下一个随机链接。
+6. 遇到第一行 A、B、C、D 全部为空时结束遍历；工作簿数据区中间不存在空白行。
+7. 母页随机链接的生成、提取和回填选择器继续保留为后续模块占位，本阶段不猜测 DOM 结构。
+
+TOTP 子模块只处理调用方传入的当前 `excelRow`，不会自行增加行号、提取随机链接或启动下一轮任务。
+
+## 3. 安全边界
 
 - 只允许固定本地域名 `http://totp-lab.local/*`。
 - 不包含滑块识别、鼠标轨迹生成、自动拖动或任何绕过 CAPTCHA / 人机验证的代码。
@@ -19,7 +33,7 @@
 - C 列值不写入扩展日志、`chrome.storage`、公共状态或错误响应。
 - 根据用户确认，包含实验密钥的本地 URL 可以进入普通 Chrome 浏览历史；关闭辅助 tab 不代表删除历史记录。
 
-## 3. 调用接口
+## 4. 调用接口
 
 核心接口：
 
@@ -33,7 +47,7 @@ runTotpLab({
 
 参数约束：
 
-- `motherTabId`：大于 0 的整数，指向普通窗口中的母页。
+- `motherTabId`：大于 0 的整数，指向普通窗口中当前保持 active 的母页。
 - `incognitoTabId`：大于 0 的整数，指向需要填写 TOTP 的无痕 tab。
 - `excelRow`：大于 0 的整数，表示第一个工作表中的 Excel 物理行号。
 - 三个 ID 由后续总工作流传入。本阶段不增加临时“设置母页”按钮。
@@ -54,7 +68,7 @@ CANCELLED
 
 状态可以包含 `runId` 和固定错误码，但不能包含 tab URL、账号、密码、C 列密钥或验证码。
 
-## 4. 配置
+## 5. 配置
 
 `native_host/config.json` 增加：
 
@@ -83,7 +97,7 @@ Manifest 增加精确 host permission：
 
 不得增加 `<all_urls>`、通配 HTTP/HTTPS 域名或运行时可扩展到其他站点的权限。
 
-## 5. Native Host 挑战 URL 构造
+## 6. Native Host 挑战 URL 构造
 
 新增命令：
 
@@ -123,11 +137,11 @@ Manifest 增加精确 host permission：
 
 固定错误码不能回显单元格值、URL 或测试钩子。
 
-## 6. 辅助 tab 创建与母页保护
+## 7. 辅助 tab 创建与母页保护
 
 控制器在创建辅助 tab 前分别调用 `chrome.tabs.get(motherTabId)` 和 `chrome.tabs.get(incognitoTabId)`：
 
-- 母页必须存在，且所在窗口不能是无痕窗口。
+- 母页必须存在、所在窗口不能是无痕窗口，并且 `motherTab.active` 必须为 `true`。
 - 目标 tab 必须存在，且所在窗口必须是无痕窗口。
 - 两个 tab ID 不能相同。
 
@@ -144,9 +158,11 @@ chrome.tabs.create({
 
 这样辅助 tab 位于母页右侧，同时不导航、不刷新、不关闭母页，也不主动抢走无痕登录窗口的焦点。
 
+创建辅助 tab 前后都要重新确认母页仍为该普通窗口的 active tab。若用户或其他扩展在母页窗口激活了别的 tab，本次运行返回 `mother_tab_not_active`，不通过重新激活母页来隐藏状态变化。
+
 创建后记录唯一的 `helperTabId`。后续刷新、脚本注入和关闭操作只能使用这个 ID，禁止使用“当前活动 tab”等不稳定定位方式。
 
-## 7. 页面稳定与验证码提取
+## 8. 页面稳定与验证码提取
 
 新增可注入的纯页面函数，概念接口：
 
@@ -172,7 +188,7 @@ readVisibleTotpCode({ timeoutMs })
 
 页面函数不点击、拖动或模拟任何人机验证控件。
 
-## 8. 刷新时序与 60 秒上限
+## 9. 刷新时序与 60 秒上限
 
 从辅助 tab 首次完成加载时开始计算总等待时间：
 
@@ -185,7 +201,7 @@ readVisibleTotpCode({ timeoutMs })
 
 刷新只能针对 `helperTabId`。在每次等待、刷新和注入后都必须检查当前运行仍未取消，并重新确认辅助 tab 仍存在。
 
-## 9. 填写无痕 TOTP 页面
+## 10. 填写无痕 TOTP 页面
 
 取得唯一验证码后：
 
@@ -203,7 +219,7 @@ readVisibleTotpCode({ timeoutMs })
 
 独立的本地 RFC 6238 TOTP 控制器继续保留。TOTP Lab 使用新的控制器和消息路由，不改变原有调用语义。
 
-## 10. 取消和清理
+## 11. 取消和清理
 
 - 每个运行拥有唯一 `runId`。
 - `cancelTotpLab(runId)` 将运行标记为 `CANCELLED`。
@@ -213,7 +229,7 @@ readVisibleTotpCode({ timeoutMs })
 - 运行结束后清除所有计时器和 tab 事件监听器。
 - 如果辅助 tab 已被用户手动关闭，返回固定错误码，不尝试操作相邻 tab。
 
-## 11. Service Worker 路由
+## 12. Service Worker 路由
 
 新增消息：
 
@@ -228,7 +244,7 @@ readVisibleTotpCode({ timeoutMs })
 - 调用方提供的 tab ID 仍由控制器通过 `chrome.tabs.get()` 验证 normal/incognito 属性。
 - 异常文本经过固定错误码过滤后才能进入响应或状态。
 
-## 12. 错误码
+## 13. 错误码
 
 至少覆盖：
 
@@ -242,6 +258,7 @@ readVisibleTotpCode({ timeoutMs })
 - `totp_test_hook_not_configured`
 - `mother_tab_missing`
 - `mother_tab_incognito`
+- `mother_tab_not_active`
 - `incognito_tab_missing`
 - `incognito_tab_required`
 - `incognito_active_tab_required`
@@ -253,7 +270,7 @@ readVisibleTotpCode({ timeoutMs })
 - 现有 TOTP 页面动作错误码
 - `cancelled`
 
-## 13. 测试策略
+## 14. 测试策略
 
 ### 13.1 Python
 
@@ -277,6 +294,7 @@ readVisibleTotpCode({ timeoutMs })
 
 - 验证普通母页和无痕目标 tab。
 - 辅助 tab 创建在母页右侧且 `active: false`。
+- 母页在创建辅助 tab 前后始终保持 `active: true`；母页不 active 时安全失败。
 - 所有刷新和关闭操作只针对 helper ID。
 - 0、15、30、45 秒附近读取/刷新并执行 60 秒总截止。
 - 找到验证码后关闭辅助 tab，再在同一无痕 tab 填写。
@@ -291,10 +309,10 @@ readVisibleTotpCode({ timeoutMs })
 - Manifest 仅增加 `http://totp-lab.local/*` 精确权限。
 - 原有批处理、Native Host、本地 TOTP 和页面填写测试继续通过。
 
-## 14. 验收标准
+## 15. 验收标准
 
 - 调用方传入有效 mother/incognito tab ID 和 Excel 行号后，模块从该行 C 列构造本地 TOTP Lab URL。
-- 辅助 tab 出现在母页右侧，母页始终保留且不被改变。
+- 辅助 tab 出现在母页右侧并保持后台状态；母页始终保留、保持 active，且不被改变。
 - 测试钩子使靶场展示唯一验证码时，扩展读取验证码、关闭辅助 tab，并在无痕页面等待最多 30 秒完成填写提交。
 - 没有验证码时按 15 秒间隔刷新，总运行不超过 60 秒。
 - 多个不同验证码时不猜测，返回 `totp_code_ambiguous`。
