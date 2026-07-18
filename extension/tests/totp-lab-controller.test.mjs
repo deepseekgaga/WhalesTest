@@ -2,21 +2,67 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createTotpLabController } from "../totp-lab-controller.js";
 
+function makeClock({ pause = false } = {}) {
+  let elapsed = 0;
+  const pending = [];
+  const abortError = () => new DOMException("Aborted", "AbortError");
+  return {
+    now: () => elapsed,
+    sleep: (ms, signal) => {
+      if (!pause) {
+        elapsed += ms;
+        return Promise.resolve();
+      }
+      return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason ?? abortError());
+          return;
+        }
+        const entry = { ms, resolve, reject };
+        const onAbort = () => {
+          const index = pending.indexOf(entry);
+          if (index >= 0) pending.splice(index, 1);
+          signal?.removeEventListener("abort", onAbort);
+          reject(signal.reason ?? abortError());
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        entry.finish = () => {
+          signal?.removeEventListener("abort", onAbort);
+          elapsed += ms;
+          resolve();
+        };
+        pending.push(entry);
+      });
+    },
+    get elapsed() {
+      return elapsed;
+    },
+    pending,
+  };
+}
+
 function makeChrome({
   motherTab = { id: 10, windowId: 1, index: 3, active: true, incognito: false },
   incognitoTab = { id: 20, windowId: 2, index: 1, active: false, incognito: true, activeTabGranted: true },
-  helperResult = { ok: true, code: "123456" },
+  helperResults = [{ ok: true, code: "123456" }],
+  helperReadPromise = null,
+  helperStatuses = ["complete"],
   fillResult = { ok: true },
   registerResult = { ok: true },
+  cancelResult = { ok: true },
   challengeUrl = "http://totp-lab.local/encoded?test_hook=lab-hook",
 } = {}) {
   const nativeMessages = [];
   const createdTabs = [];
   const removedTabs = [];
+  const reloadedTabs = [];
   const helperExecutions = [];
   const targetExecutions = [];
   const motherMutations = [];
+  const helperStatusChecks = [];
   let nativeListener;
+  let helperStatusIndex = 0;
+  let helperReadIndex = 0;
 
   const tabsById = new Map();
   if (motherTab) tabsById.set(motherTab.id, motherTab);
@@ -39,9 +85,11 @@ function makeChrome({
     nativeMessages,
     createdTabs,
     removedTabs,
+    reloadedTabs,
     helperExecutions,
     targetExecutions,
     motherMutations,
+    helperStatusChecks,
     runtime: {
       id: "ext",
       connectNative() {
@@ -50,7 +98,15 @@ function makeChrome({
     },
     tabs: {
       async get(tabId) {
-        return tabsById.get(tabId) || null;
+        const tab = tabsById.get(tabId);
+        if (!tab) return null;
+        if (tab.id === 30) {
+          const status = helperStatuses[Math.min(helperStatusIndex, helperStatuses.length - 1)] ?? "complete";
+          helperStatusIndex += 1;
+          helperStatusChecks.push(status);
+          return { ...tab, status };
+        }
+        return tab;
       },
       async create(details) {
         createdTabs.push(details);
@@ -62,18 +118,27 @@ function makeChrome({
         removedTabs.push(tabId);
         tabsById.delete(tabId);
       },
+      async reload(tabId) {
+        reloadedTabs.push(tabId);
+      },
     },
     scripting: {
       async executeScript(details) {
         if (details.target.tabId === incognitoTab.id) {
           targetExecutions.push(details);
-          if (!incognitoTab.activeTabGranted) throw new Error("incognito_active_tab_required");
-          if (details.func.name === "registerTotpOnPage") return [{ result: registerResult }];
-          return [{ result: fillResult }];
+          if (details.func.name === "registerTotpOnPage") {
+            if (!incognitoTab.activeTabGranted) throw new Error("incognito_active_tab_required");
+            return [{ result: registerResult }];
+          }
+          if (details.func.name === "fillTotpOnPage") return [{ result: fillResult }];
+          if (details.func.name === "cancelTotpOnPage") return [{ result: cancelResult }];
         }
         if (details.target.tabId === motherTab.id) return [{ result: { ok: true } }];
         helperExecutions.push(details);
-        return [{ result: helperResult }];
+        if (helperReadPromise) return helperReadPromise;
+        const result = helperResults[Math.min(helperReadIndex, helperResults.length - 1)] ?? helperResults[helperResults.length - 1] ?? { ok: false, error: "helper_page_not_stable" };
+        helperReadIndex += 1;
+        return [{ result }];
       },
     },
   };
@@ -137,6 +202,98 @@ test("returns incognito_tab_required when the target tab is not incognito", asyn
   assert.equal(result.error, "incognito_tab_required");
   assert.equal(chrome.createdTabs.length, 0);
   assert.equal(chrome.removedTabs.length, 0);
+});
+
+test("refreshes every 15 seconds and stops at the 60-second deadline", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperResults: [
+      { ok: false, error: "code_not_present" },
+      { ok: false, error: "code_not_present" },
+      { ok: false, error: "code_not_present" },
+      { ok: false, error: "code_not_present" },
+      { ok: false, error: "code_not_present" },
+    ],
+  });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1", now: clock.now, sleep: clock.sleep });
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "totp_code_not_found" });
+  assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
+  assert.equal(clock.elapsed, 60_000);
+  assert.equal(chrome.helperExecutions.length, 5);
+});
+
+test("does not reload when the helper returns an ambiguous code", async () => {
+  const chrome = makeChrome({ helperResults: [{ ok: false, error: "totp_code_ambiguous" }] });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "totp_code_ambiguous" });
+  assert.deepEqual(chrome.reloadedTabs, []);
+  assert.equal(chrome.helperExecutions.length, 1);
+});
+
+test("waits for the helper page to complete loading before reading", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperStatuses: ["loading", "loading", "complete"],
+    helperResults: [{ ok: true, code: "123456" }],
+  });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1", now: clock.now, sleep: clock.sleep });
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "SUCCEEDED", runId: "run-1", error: "" });
+  assert.ok(chrome.helperStatusChecks.length >= 3);
+  assert.equal(chrome.helperExecutions.length, 1);
+});
+
+test("returns helper_page_not_stable when the helper never reaches complete", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({
+    helperStatuses: Array.from({ length: 200 }, () => "loading"),
+  });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1", now: clock.now, sleep: clock.sleep });
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "helper_page_not_stable" });
+  assert.equal(chrome.helperExecutions.length, 0);
+  assert.deepEqual(chrome.reloadedTabs, []);
+});
+
+test("cancels only the helper tab and best-effort cancels the target page", async () => {
+  const clock = makeClock({ pause: true });
+  const chrome = makeChrome({ helperResults: [{ ok: false, error: "code_not_present" }] });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1", now: clock.now, sleep: clock.sleep });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(await running, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.reloadedTabs, []);
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["registerTotpOnPage", "cancelTotpOnPage"]);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "fillTotpOnPage"), false);
+});
+
+test("cancel aborts a pending helper read and cleans up the helper", async () => {
+  const chrome = makeChrome({ helperReadPromise: new Promise(() => {}) });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const running = controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  for (let i = 0; chrome.helperExecutions.length === 0 && i < 10; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(chrome.helperExecutions.length, 1);
+  assert.deepEqual(await controller.cancel("run-1"), { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  const result = await Promise.race([
+    running,
+    new Promise((resolve) => setTimeout(() => resolve({ state: "HUNG" }), 100)),
+  ]);
+
+  assert.deepEqual(result, { state: "CANCELLED", runId: "run-1", error: "cancelled" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "fillTotpOnPage"), false);
 });
 
 test("returns request_invalid for identical mother and target tab ids without creating a helper", async () => {
