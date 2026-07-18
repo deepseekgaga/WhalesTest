@@ -325,17 +325,49 @@ test("validates mother, target, row, and activeTab grant before opening helper w
   }
 });
 
+test("maps known Chrome tabs.get rejections to missing initial tabs", async () => {
+  for (const [tabId, rejectionMessage, expectedError] of [
+    [10, "No tab with id: 10.", "mother_tab_missing"],
+    [20, "Invalid tab ID: 20.", "incognito_tab_missing"],
+  ]) {
+    const chrome = makeChrome();
+    const originalGet = chrome.tabs.get;
+    chrome.tabs.get = async (requestedTabId) => {
+      if (requestedTabId === tabId) throw new Error(rejectionMessage);
+      return originalGet(requestedTabId);
+    };
+    const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+    const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+    assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: expectedError });
+    assert.equal(chrome.createdTabs.length, 0);
+  }
+});
+
+test("sanitizes unexpected tabs.get rejections instead of treating them as missing tabs", async () => {
+  const chrome = makeChrome();
+  chrome.tabs.get = async () => {
+    throw new Error("Unexpected tab service failure at https://sms-lab.local/private?token=secret");
+  };
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_failed" });
+});
+
 test("rejects invalid native responses before requesting SMS on the target", async () => {
   for (const [expectedError, nativeResponse] of [
     ["sms_lab_challenge_failed", { ok: false }],
     ["sms_phone_invalid", { ok: true, phone: "", challenge_url: "http://sms-lab.local/challenge" }],
     ["sms_phone_invalid", { ok: true, phone: 555, challenge_url: "http://sms-lab.local/challenge" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: " https://sms-lab.local/challenge" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: "http://SMS-LAB.LOCAL/challenge" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local:80/challenge" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: "http://user@sms-lab.local/challenge" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local/challenge#frag" }],
-    ["sms_lab_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local/challenge\n" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: " https://sms-lab.local/challenge" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: "http://SMS-LAB.LOCAL/challenge" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local:80/challenge" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: "http://user@sms-lab.local/challenge" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local/challenge#frag" }],
+    ["sms_url_invalid", { ok: true, phone: "555", challenge_url: "http://sms-lab.local/challenge\n" }],
   ]) {
     const chrome = makeChrome({ nativeResponse });
     const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
@@ -400,7 +432,7 @@ test("removes the helper and fails when the helper redirects before reading", as
 
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
-  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_url_invalid" });
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_url_invalid" });
   assert.deepEqual(chrome.removedTabs, [30]);
   assert.equal(chrome.helperExecutions.length, 0);
   assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["probeSmsOnPage", "registerSmsOnPage", "requestSmsOnPage"]);
@@ -476,6 +508,23 @@ test("rechecks the mother tab before submitting and cleans up the helper on page
   }
 });
 
+test("maps a known final mother tabs.get rejection to mother_tab_missing", async () => {
+  const chrome = makeChrome();
+  const originalGet = chrome.tabs.get;
+  let motherGets = 0;
+  chrome.tabs.get = async (tabId) => {
+    if (tabId === 10 && ++motherGets === 2) throw new Error("Tab not found: 10");
+    return originalGet(tabId);
+  };
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "mother_tab_missing" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "submitSmsCodeOnPage"), false);
+});
+
 test("waits at most five seconds for the helper to complete before reading", async () => {
   const clock = makeClock();
   const chrome = makeChrome({
@@ -496,16 +545,16 @@ test("waits at most five seconds for the helper to complete before reading", asy
   assert.deepEqual(chrome.removedTabs, [30]);
 });
 
-test("retries helper reads at 0, 15, 30, 45, and 60 seconds with exactly three reloads", async () => {
+test("reserves the final five seconds for the last helper read with exactly three reloads", async () => {
   const clock = makeClock();
+  const readStarts = [];
+  const readBudgets = [];
   const chrome = makeChrome({
-    helperResults: [
-      { ok: false, error: "code_not_present" },
-      { ok: false, error: "code_not_present" },
-      { ok: false, error: "code_not_present" },
-      { ok: false, error: "code_not_present" },
-      { ok: false, error: "code_not_present" },
-    ],
+    helperReadFn(details) {
+      readStarts.push(clock.elapsed);
+      readBudgets.push(details.args[0].timeoutMs);
+      return { ok: false, error: "code_not_present" };
+    },
   });
   const controller = createSmsLabController(chrome, {
     makeRunId: () => "run-1",
@@ -519,8 +568,36 @@ test("retries helper reads at 0, 15, 30, 45, and 60 seconds with exactly three r
   assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_code_not_found" });
   assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
   assert.equal(clock.elapsed, 60_000);
-  assert.equal(chrome.helperExecutions.length, 5);
+  assert.deepEqual(readStarts, [0, 15_000, 30_000, 45_000, 55_000]);
+  assert.deepEqual(readBudgets, [5_000, 5_000, 5_000, 5_000, 5_000]);
   assert.equal(chrome.helperExecutions.every((entry) => entry.target.tabId === 30), true);
+});
+
+test("finds a code during the final helper quiet and sample window", async () => {
+  const clock = makeClock();
+  const readStarts = [];
+  const chrome = makeChrome({
+    helperReadFn(details, readIndex) {
+      readStarts.push(clock.elapsed);
+      if (readIndex < 4) return { ok: false, error: "code_not_present" };
+      assert.equal(details.args[0].timeoutMs, 5_000);
+      clock.advance(800 + 250);
+      return { ok: true, code: "654321" };
+    },
+  });
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "SUCCEEDED", runId: "run-1", error: "" });
+  assert.deepEqual(readStarts, [0, 15_000, 30_000, 45_000, 55_000]);
+  assert.equal(clock.elapsed, 56_050);
+  assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
 });
 
 test("does not extend the total deadline when the helper never completes after a reload", async () => {
@@ -568,11 +645,13 @@ test("slow helper load and read share one absolute read deadline", async () => {
   assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
 });
 
-test("final helper read does not start after the absolute 60 second deadline", async () => {
+test("a no-code final helper read consumes at most the remaining absolute deadline", async () => {
   const clock = makeClock();
+  const readStarts = [];
   const chrome = makeChrome({
-    helperReadFn(details) {
-      clock.advance(details.args[0].timeoutMs);
+    helperReadFn(details, readIndex) {
+      readStarts.push(clock.elapsed);
+      if (readIndex === 4) clock.advance(details.args[0].timeoutMs);
       return { ok: false, error: "code_not_present" };
     },
   });
@@ -586,7 +665,9 @@ test("final helper read does not start after the absolute 60 second deadline", a
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
   assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_code_not_found" });
-  assert.equal(clock.elapsed, 60_000);
+  assert.equal(clock.elapsed <= 60_000, true);
+  assert.deepEqual(readStarts, [0, 15_000, 30_000, 45_000, 55_000]);
+  assert.equal(chrome.helperExecutions[4].args[0].timeoutMs, 5_000);
   assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
   assert.equal(chrome.helperExecutions.length, 5);
 });
@@ -617,7 +698,7 @@ test("validates the helper tab still exists, is complete, and remains on sms-lab
 
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
-  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_lab_url_invalid" });
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_url_invalid" });
   assert.deepEqual(chrome.reloadedTabs, [30]);
   assert.equal(chrome.helperExecutions.length, 1);
 });
@@ -638,7 +719,30 @@ test("returns helper_tab_closed when the helper is manually closed during retry 
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
   assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "helper_tab_closed" });
-  assert.deepEqual(chrome.reloadedTabs, [30]);
+  assert.deepEqual(chrome.reloadedTabs, []);
+  assert.deepEqual(chrome.removedTabs, [30]);
+});
+
+test("maps a known helper tabs.get rejection during retry to helper_tab_closed", async () => {
+  const clock = makeClock();
+  const chrome = makeChrome({ helperResults: [{ ok: false, error: "code_not_present" }] });
+  const originalGet = chrome.tabs.get;
+  let helperGets = 0;
+  chrome.tabs.get = async (tabId) => {
+    if (tabId === 30 && ++helperGets === 2) throw new Error("No tab with id: 30.");
+    return originalGet(tabId);
+  };
+  const controller = createSmsLabController(chrome, {
+    makeRunId: () => "run-1",
+    selectors: configuredSelectors,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "helper_tab_closed" });
+  assert.deepEqual(chrome.reloadedTabs, []);
   assert.deepEqual(chrome.removedTabs, [30]);
 });
 

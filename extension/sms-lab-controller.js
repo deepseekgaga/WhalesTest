@@ -32,6 +32,20 @@ function safeError(error, fallback = "sms_lab_failed") {
   return /^[a-z][a-z0-9_]{1,64}$/.test(value) ? value : fallback;
 }
 
+function isMissingTabError(error) {
+  const message = error instanceof Error ? error.message : "";
+  return /(?:no tab with id|tab not found|invalid tab id)/i.test(message);
+}
+
+async function getTabOrNull(api, tabId) {
+  try {
+    return await api.tabs.get(tabId);
+  } catch (error) {
+    if (isMissingTabError(error)) return null;
+    throw error;
+  }
+}
+
 function sleepDefault(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -57,17 +71,17 @@ function sleepDefault(ms, signal) {
 
 function validateChallengeUrl(value) {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim() || /[\u0000-\u001f\u007f\s]/.test(value)) {
-    throw new Error("sms_lab_url_invalid");
+    throw new Error("sms_url_invalid");
   }
   if (!/^http:\/\/sms-lab\.local(?:[/?]|$)/.test(value)) {
-    throw new Error("sms_lab_url_invalid");
+    throw new Error("sms_url_invalid");
   }
 
   let url;
   try {
     url = new URL(value);
   } catch {
-    throw new Error("sms_lab_url_invalid");
+    throw new Error("sms_url_invalid");
   }
 
   if (
@@ -79,7 +93,7 @@ function validateChallengeUrl(value) {
     url.password ||
     url.hash
   ) {
-    throw new Error("sms_lab_url_invalid");
+    throw new Error("sms_url_invalid");
   }
 
   return value;
@@ -249,12 +263,12 @@ export function createSmsLabController(api, options = {}) {
   }
 
   async function assertTabs(motherTabId, incognitoTabId) {
-    const motherTab = await api.tabs.get(motherTabId);
+    const motherTab = await getTabOrNull(api, motherTabId);
     if (!motherTab) throw new Error("mother_tab_missing");
     if (motherTab.incognito) throw new Error("mother_tab_incognito");
     if (motherTab.active !== true) throw new Error("mother_tab_not_active");
 
-    const targetTab = await api.tabs.get(incognitoTabId);
+    const targetTab = await getTabOrNull(api, incognitoTabId);
     if (!targetTab) throw new Error("incognito_tab_missing");
     if (targetTab.incognito !== true) throw new Error("incognito_tab_required");
 
@@ -368,7 +382,7 @@ export function createSmsLabController(api, options = {}) {
   async function waitForHelperComplete(run, deadline) {
     while (now() < deadline) {
       throwIfCancelled(run);
-      const helperTab = await api.tabs.get(run.helperTabId);
+      const helperTab = await getTabOrNull(api, run.helperTabId);
       if (!helperTab) throw new Error("helper_tab_closed");
       if (helperTab.status === "complete") return helperTab;
       const remaining = deadline - now();
@@ -402,7 +416,7 @@ export function createSmsLabController(api, options = {}) {
       if (result?.error === "totp_code_ambiguous") throw new Error("sms_code_ambiguous");
       if (result?.error !== "code_not_present") throw new Error(result?.error || "helper_page_not_stable");
 
-      const finalReadBudgetMs = 1;
+      const finalReadBudgetMs = HELPER_READ_TIMEOUT_MS;
       const nextBoundary = reloads < 3
         ? started + REFRESH_INTERVAL_MS * (reloads + 1)
         : deadline;
@@ -412,6 +426,8 @@ export function createSmsLabController(api, options = {}) {
       throwIfCancelled(run);
       if (deadline - now() <= 0) throw new Error("sms_code_not_found");
       if (reloads >= 3) return finalReadOrFail(run, deadline);
+      const helperTab = await getTabOrNull(api, run.helperTabId);
+      if (!helperTab) throw new Error("helper_tab_closed");
       await api.tabs.reload(run.helperTabId);
       reloads += 1;
       throwIfCancelled(run);
@@ -518,7 +534,7 @@ export function createSmsLabController(api, options = {}) {
       const code = await waitForCode(run);
       await closeHelper(run);
 
-      const refreshedMother = await api.tabs.get(motherTabId);
+      const refreshedMother = await getTabOrNull(api, motherTabId);
       if (!refreshedMother) throw new Error("mother_tab_missing");
       if (refreshedMother.incognito) throw new Error("mother_tab_incognito");
       if (refreshedMother.active !== true) throw new Error("mother_tab_not_active");

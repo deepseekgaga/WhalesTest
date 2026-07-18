@@ -443,6 +443,25 @@ test("routes run_sms_lab through native, SMS page, helper read, and submit", asy
   assert.deepEqual(chrome.removedTabs, [30]);
 });
 
+test("returns the fixed SMS URL validation error through the background route", async () => {
+  const chrome = makeSmsLabChrome({ challengeUrl: "https://sms-lab.local/challenge" });
+  createSmsRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener(
+      { type: "run_sms_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2 },
+      { id: "ext" },
+      resolve,
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.deepEqual(response, {
+    ok: true,
+    result: { state: "FAILED", runId: "sms-run-1", error: "sms_url_invalid" },
+  });
+  assert.deepEqual(chrome.createdTabs, []);
+});
+
 test("reports configured selector failure when SMS Lab runs with production placeholders", async () => {
   const chrome = makeSmsLabChrome();
   createExtensionRuntime(chrome);
