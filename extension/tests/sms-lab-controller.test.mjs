@@ -476,6 +476,23 @@ test("retries helper cleanup when the first close after code read fails", async 
   assert.equal(chrome.targetExecutions.some((entry) => entry.func.name === "submitSmsCodeOnPage"), false);
 });
 
+test("maps an already-closed helper after a successful read to helper_tab_closed", async () => {
+  const chrome = makeChrome({ removeFailures: ["No tab with id: 30."] });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "helper_tab_closed" });
+  assert.deepEqual(controller.getState(), { state: "FAILED", runId: "run-1", error: "helper_tab_closed" });
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.motherMutations, []);
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
+    "registerSmsOnPage",
+    "requestSmsOnPage",
+  ]);
+});
+
 test("rechecks the mother tab before submitting and cleans up the helper on page action errors", async () => {
   for (const [expectedError, overrides] of [
     ["sms_request_failed", { requestResult: { ok: false, error: "sms_request_failed" } }],

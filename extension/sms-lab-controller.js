@@ -465,6 +465,11 @@ export function createSmsLabController(api, options = {}) {
       .then(() => {
         if (run.helperTabId === helperTabId) run.helperTabId = null;
       })
+      .catch((error) => {
+        if (!isMissingTabError(error)) throw error;
+        if (run.helperTabId === helperTabId) run.helperTabId = null;
+        throw new Error("helper_tab_closed");
+      })
       .finally(() => {
         run.helperRemoval = null;
       });
