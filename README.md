@@ -63,18 +63,18 @@ E 列 URL 必须是 `http://sms-lab.local/` 下的完整 URL；模块拒绝 HTTP
 
 ### 选择器配置
 
-运行前必须在 `extension/sms-lab-selectors.js` 配置四个页面选择器字面量，不能保留占位值：
+运行前必须在 `extension/sms-lab-selectors.js` 配置四个页面选择器字面量。不要修改内部 `PLACEHOLDERS` 哨兵值；它们用于检测未配置状态。保留 `PLACEHOLDERS` 不变，并把导出的 `SMS_LAB_SELECTORS` 替换为四个真实选择器字符串：
 
 ```javascript
-const PLACEHOLDERS = Object.freeze({
-  phoneInput: "__FILL_SMS_PHONE_INPUT_SELECTOR__",
-  sendButton: "__FILL_SMS_SEND_BUTTON_SELECTOR__",
-  codeInput: "__FILL_SMS_CODE_INPUT_SELECTOR__",
-  submitButton: "__FILL_SMS_SUBMIT_BUTTON_SELECTOR__",
+export const SMS_LAB_SELECTORS = Object.freeze({
+  phoneInput: "#sms-phone",
+  sendButton: "#sms-send",
+  codeInput: "#sms-code",
+  submitButton: "#sms-submit",
 });
 ```
 
-四个值分别定位手机号输入框、发送短信按钮、验证码输入框和提交验证码按钮。选择器未配置时，控制器会在请求 Native Host 前失败。
+四个导出值分别定位手机号输入框、发送短信按钮、验证码输入框和提交验证码按钮。只要 `SMS_LAB_SELECTORS` 仍等于占位哨兵值，控制器会在请求 Native Host 前失败。
 
 ### 标签页与验证码读取
 
