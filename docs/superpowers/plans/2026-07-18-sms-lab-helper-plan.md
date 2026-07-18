@@ -4,7 +4,7 @@
 
 **Goal:** 在 TOTP 成功后，使用同一 Excel 物理行的 D 列手机号和 E 列 `sms-lab.local` 链接，在同一个无痕标签页完成短信验证码提交。
 
-**Architecture:** Native Host 单次读取并验证同一行的 D/E 列；扩展页面函数负责稳定等待、填写手机号和验证码；独立短信控制器负责标签页边界、15 秒刷新、60 秒截止和取消竞态；Service Worker 只暴露严格字段白名单的短信路由。
+**Architecture:** Native Host 单次读取并验证同一行的 D/E 列；扩展页面函数负责稳定等待、填写手机号和验证码以及 click-first 提交；独立短信控制器负责标签页边界、15/30/45 秒刷新、55–60 秒最终读取窗口、60 秒硬截止和取消竞态；Service Worker 只暴露严格字段白名单的短信路由。
 
 **Tech Stack:** Python 3.11 标准库、现有 XLSX Open XML 读取器、Chrome Manifest V3、Native Messaging、`chrome.tabs`、`chrome.scripting`、Node.js test runner、Python `unittest`。
 
@@ -257,7 +257,7 @@ test("waits for stable phone controls, preserves the phone, and sends once", asy
   assert.deepEqual(result, { ok: true });
   assert.equal(input.value, " +86 138-0000 ");
   assert.deepEqual(input.events, ["input", "change"]);
-  assert.equal(button.form.submitCount, 1);
+  assert.equal(button.clicked, 1);
 });
 
 test("waits for stable code controls and submits one six-digit code", async () => {
@@ -302,7 +302,7 @@ export function requireSmsLabSelectors(selectors = SMS_LAB_SELECTORS) {
 
 - [ ] **Step 4: 实现页面函数**
 
-`requestSmsOnPage` 和 `submitSmsCodeOnPage` 必须完全自包含，以便通过 `chrome.scripting.executeScript({func})` 序列化。两者内部实现：稳定采样、可见性检查、原生 value setter、`input`/`change` 事件，以及 `form.requestSubmit(button)` 或 `button.click()`。
+`requestSmsOnPage` 和 `submitSmsCodeOnPage` 必须完全自包含，以便通过 `chrome.scripting.executeScript({func})` 序列化。两者内部实现：稳定采样、可见性检查、原生 value setter、`input`/`change` 事件，以及 click-first 提交策略。如果按钮提供 `click()`，必须优先调用 `button.click()`，以同时支持 `type="button"` 点击处理器和原生提交按钮；只有按钮没有可调用的 `click()` 时，才回退到 `form.requestSubmit(button)`。
 
 固定错误码分别使用：
 
@@ -311,10 +311,12 @@ export function requireSmsLabSelectors(selectors = SMS_LAB_SELECTORS) {
 "sms_phone_input_not_found"
 "sms_send_button_not_found"
 "sms_send_button_disabled"
+"sms_send_failed"
 "sms_code_invalid"
 "sms_code_input_not_found"
 "sms_submit_button_not_found"
 "sms_submit_button_disabled"
+"sms_submit_failed"
 "page_not_stable"
 "cancelled"
 ```
@@ -375,7 +377,7 @@ test("sends the same-row phone, reads a helper code, and submits on the same inc
 });
 ```
 
-同时覆盖：选择器未配置时不请求 Native Host；母页缺失/非 active/无痕；目标页非无痕；相同 tab ID；目标页无 `activeTab` 权限；Native 响应不含合法手机号或 URL。
+同时覆盖：选择器未配置时不请求 Native Host；母页缺失/非 active/无痕；目标页非无痕；相同 tab ID；目标页无 `activeTab` 权限；Native 响应不含合法手机号或 URL；已知 `tabs.get` 缺失拒绝分别映射为 `mother_tab_missing`、`incognito_tab_missing`，而无法识别的 `tabs.get` 拒绝清洗为 `sms_lab_failed`。
 
 - [ ] **Step 2: 运行测试并确认红灯**
 
@@ -419,7 +421,7 @@ await assertMotherStillActive(run.motherTabId);
 await executeTarget(run, submitSmsCodeOnPage, { code, selectors, timeoutMs: PAGE_ACTION_TIMEOUT_MS });
 ```
 
-`validateSmsUrl()` 必须拒绝协议、origin、hostname、凭据、端口和片段不符合固定边界的值。Helper 加载完成后使用 `tabs.get(helperTabId).url` 再次验证最终 URL，再执行 `readVisibleTotpCode`。
+`validateSmsUrl()` 必须拒绝协议、origin、hostname、凭据、端口和片段不符合固定边界的值，并将 Native 响应或 Helper 最终 URL 的边界失败统一映射为 `sms_url_invalid`。Helper 加载完成后使用 `tabs.get(helperTabId).url` 再次验证最终 URL，再执行 `readVisibleTotpCode`；已知 Helper 缺失拒绝映射为 `helper_tab_closed`。
 
 - [ ] **Step 4: 运行成功路径 tests**
 
@@ -466,7 +468,7 @@ function failAfter(ms) {
   return new Promise((_, reject) => setTimeout(() => reject(new Error("run_hung")), ms));
 }
 
-function createController(chrome) {
+function createController(chrome, clock = makeClock()) {
   return createSmsLabController(chrome, {
     selectors: configuredSelectors,
     makeRunId: () => "sms-run-1",
@@ -475,18 +477,23 @@ function createController(chrome) {
   });
 }
 
-test("refreshes at 15, 30, and 45 seconds then performs the final read at 60", async () => {
-  const chrome = makeSmsChrome({ helperResults: [
-    { ok: false, error: "code_not_present" },
-    { ok: false, error: "code_not_present" },
-    { ok: false, error: "code_not_present" },
-    { ok: false, error: "code_not_present" },
-    { ok: false, error: "code_not_present" },
-  ]});
-  const result = await controllerWithClock(chrome).run(validRequest);
+test("reserves the final five seconds for the last helper read with exactly three reloads", async () => {
+  const clock = makeClock();
+  const readStarts = [];
+  const readBudgets = [];
+  const chrome = makeSmsChrome({
+    helperReadFn(details) {
+      readStarts.push(clock.elapsed);
+      readBudgets.push(details.args[0].timeoutMs);
+      return { ok: false, error: "code_not_present" };
+    },
+  });
+  const result = await createController(chrome, clock).run(validRequest);
   assert.equal(result.error, "sms_code_not_found");
   assert.deepEqual(chrome.reloadedTabs, [30, 30, 30]);
   assert.equal(clock.elapsed, 60_000);
+  assert.deepEqual(readStarts, [0, 15_000, 30_000, 45_000, 55_000]);
+  assert.deepEqual(readBudgets, [5_000, 5_000, 5_000, 5_000, 5_000]);
 });
 
 test("rejects a redirected helper before injecting the reader", async () => {
@@ -556,8 +563,9 @@ const HELPER_LOAD_POLL_MS = 100;
 3. 成功立即返回 code。
 4. `totp_code_ambiguous` 映射并抛出 `sms_code_ambiguous`。
 5. 非 `code_not_present` 错误立即失败。
-6. 等待到下一 15 秒边界；达到 60 秒时执行最后一次有界读取。
-7. 只有未取消且未到截止时间时才 `tabs.reload(helperTabId)`。
+6. 初次加载后立即读取；验证码持续缺失时在约 15、30、45 秒边界各执行一次 reload，每次 reload 完成加载后再次读取，完整超时路径恰好三次刷新。
+7. 第三次 reload 后等待到约 55 秒，为 `HELPER_READ_TIMEOUT_MS = 5_000` 毫秒的最终读取保留完整窗口；最终读取必须在 60 秒硬截止前完成，而不是到 60 秒才开始。
+8. 只有未取消且仍处于前三个刷新边界时才 `tabs.reload(helperTabId)`；55–60 秒最终窗口不再刷新。
 
 - [ ] **Step 4: 实现取消**
 
@@ -683,7 +691,7 @@ README 必须说明：
 - 同一物理行 D 列为手机号、E 列为 `sms-lab.local` 完整 URL。
 - 四个选择器占位符文件和配置方法。
 - 母页保持 active，辅助页位于母页右侧后台。
-- 15 秒刷新、60 秒截止、多验证码拒绝。
+- 验证码持续缺失时约 15/30/45 秒恰好三次刷新、约 55–60 秒最终读取窗口、60 秒硬截止和多验证码拒绝。
 - 不记录手机号、URL、验证码，不连接商业接码平台。
 - 当前短信模块不推进 Excel 行、不点击最终接受按钮、不启动下一任务。
 
@@ -720,9 +728,10 @@ git commit -m "Document the local SMS verification workflow"
 ## 计划自审
 
 - Task 1/2 覆盖同一物理行 D/E 读取、URL 固定边界和 Native 命令。
-- Task 3 覆盖四个选择器占位符、30 秒稳定等待、手机号与验证码页面动作。
-- Task 4/5 覆盖同一无痕页、母页 active、辅助页右侧、15/60 时序、重定向和取消竞态。
+- Task 3 覆盖四个选择器占位符、30 秒稳定等待、手机号与验证码页面动作，以及 click-first/`requestSubmit` fallback 和固定动作失败码。
+- Task 4/5 覆盖同一无痕页、母页 active、辅助页右侧、0/15/30/45 读取、55–60 秒最终窗口、恰好三次刷新、URL/标签页错误映射、重定向和取消竞态。
 - Task 6 覆盖严格消息字段、精确 host permission 和打包文件。
 - Task 7 覆盖中文说明、完整回归和安全扫描。
 - 所有后续任务使用统一函数名：`build_sms_lab_challenge`、`requestSmsOnPage`、`submitSmsCodeOnPage`、`createSmsLabController`。
 - 计划不包含未定义的业务阶段，不推进 Excel 行，不实现最终接受按钮或下一轮循环。
+- 本次文档同步不增加新的实现任务或行为范围，只校正已经验证的动作顺序、时序和错误契约。
