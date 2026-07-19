@@ -1,4 +1,6 @@
-# Whalestest 双 Chrome 扩展拆分设计
+# 已废弃：Whalestest 双 Chrome 扩展拆分设计
+
+> 本文档已被 `2026-07-19-single-extension-two-stage-design.md` 取代。当前方案不再拆成两个 Chrome 扩展，而是在一个扩展中提供两个手动触发阶段。
 
 ## 目标
 
