@@ -51,6 +51,36 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.totp_lab_url, "")
         self.assertEqual(config.totp_lab_test_hook, "")
 
+    def test_workflow_input_defaults_to_output_excel(self):
+        path = self.write_config(
+            {
+                "input_excel": "input.xlsx",
+                "url_column": "CC地址",
+                "txt_directory": "txt保存",
+                "output_excel": "generated.xlsx",
+                "download_timeout_seconds": 180,
+                "field_mappings": {"A": "", "B": "", "C": "", "D": ""},
+            }
+        )
+        config = load_config(path)
+        self.assertEqual(config.workflow_input_excel, None)
+        self.assertEqual(config.workflow_excel, config.output_excel)
+
+    def test_workflow_input_can_be_overridden(self):
+        path = self.write_config(
+            {
+                "input_excel": "input.xlsx",
+                "url_column": "CC地址",
+                "txt_directory": "txt保存",
+                "output_excel": "generated.xlsx",
+                "workflow_input_excel": "workflow.xlsx",
+                "download_timeout_seconds": 180,
+                "field_mappings": {"A": "", "B": "", "C": "", "D": ""},
+            }
+        )
+        config = load_config(path)
+        self.assertEqual(config.workflow_excel.name, "workflow.xlsx")
+
     def test_unknown_mapping_key_is_rejected(self):
         path = self.write_config(
             {
@@ -129,5 +159,6 @@ class ConfigTests(unittest.TestCase):
     def test_repo_config_uses_the_local_totp_lab_settings(self):
         config = load_config(Path("native_host/config.json"))
         self.assertEqual(str(config.input_excel), r"C:\Users\HE\Downloads\jingshajingsha\cc汇总.xlsx")
+        self.assertEqual(str(config.workflow_excel), r"C:\Users\HE\Downloads\jingshajingsha\cc汇总.xlsx")
         self.assertEqual(config.totp_lab_url, "http://totp-lab.local/")
         self.assertEqual(config.totp_lab_test_hook, "__FILL_TOTP_TEST_HOOK__")

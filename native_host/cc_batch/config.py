@@ -28,6 +28,11 @@ class Config:
     field_continuation_lines: dict[str, int] | None = None
     totp_lab_url: str = ""
     totp_lab_test_hook: str = ""
+    workflow_input_excel: Path | None = None
+
+    @property
+    def workflow_excel(self) -> Path:
+        return self.workflow_input_excel or self.output_excel
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -88,11 +93,15 @@ def load_config(path: str | Path) -> Config:
     download_directory_value = payload.get("download_directory")
     if download_directory_value is not None and (not isinstance(download_directory_value, str) or not download_directory_value.strip()):
         raise ConfigError("invalid_download_directory")
+    output_excel = resolve(_required_string(payload, "output_excel"))
+    workflow_input_excel_value = payload.get("workflow_input_excel")
+    if workflow_input_excel_value is not None and (not isinstance(workflow_input_excel_value, str) or not workflow_input_excel_value.strip()):
+        raise ConfigError("invalid_workflow_input_excel")
     return Config(
         input_excel=resolve(_required_string(payload, "input_excel")),
         url_column=_required_string(payload, "url_column"),
         txt_directory=txt_directory,
-        output_excel=resolve(_required_string(payload, "output_excel")),
+        output_excel=output_excel,
         download_timeout_seconds=timeout,
         field_mappings=normalized_mapping,
         config_path=config_path,
@@ -100,4 +109,5 @@ def load_config(path: str | Path) -> Config:
         field_continuation_lines=normalized_continuation,
         totp_lab_url=_optional_string(payload, "totp_lab_url", error_code="invalid_totp_lab_url"),
         totp_lab_test_hook=_optional_string(payload, "totp_lab_test_hook", error_code="invalid_totp_lab_test_hook"),
+        workflow_input_excel=resolve(payload["workflow_input_excel"]) if payload.get("workflow_input_excel") else None,
     )

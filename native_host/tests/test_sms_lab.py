@@ -84,6 +84,18 @@ class SmsLabTests(unittest.TestCase):
 
             self.assertEqual(challenge.challenge_url, f"{SMS_LAB_ORIGIN}/a/b?x=1&y=%2F")
 
+    def test_can_read_from_the_generated_workbook_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.xlsx"
+            generated = Path(directory) / "generated.xlsx"
+            write_xlsx(source, [["header", "", "", "phone", "url"], ["source", "", "", "000", f"{SMS_LAB_ORIGIN}/source"]])
+            write_xlsx(generated, [["header", "", "", "phone", "url"], ["generated", "", "", "111", f"{SMS_LAB_ORIGIN}/generated"]])
+            config = self.config(directory, source)
+
+            challenge = build_sms_lab_challenge(config, 2, workbook_path=generated)
+
+            self.assertEqual(challenge, SmsLabChallenge("111", f"{SMS_LAB_ORIGIN}/generated"))
+
     def test_rejects_header_row_non_integer_boolean_and_low_excel_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             workbook = Path(directory) / "accounts.xlsx"

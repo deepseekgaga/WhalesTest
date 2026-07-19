@@ -4,6 +4,7 @@
   "txt_directory": "C:\\Users\\HE\\Downloads\\jingshajingsha\\txt保存",
   "download_directory": "C:\\Users\\HE\\Downloads\\jingshajingsha\\txt保存",
   "output_excel": "C:\\Users\\HE\\Downloads\\jingshajingsha\\cc汇总.xlsx",
+  "workflow_input_excel": "C:\\Users\\HE\\Downloads\\jingshajingsha\\cc汇总.xlsx",
   "download_timeout_seconds": 180,
   "field_mappings": {
     "A": "账户",

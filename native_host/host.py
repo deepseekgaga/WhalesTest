@@ -54,7 +54,7 @@ class HostApplication:
             return {"ok": False, "error": "request_invalid", "fatal": False}
         try:
             config = load_config(self.config_path)
-            return {"ok": True, "challenge_url": build_totp_lab_challenge(config, excel_row)}
+            return {"ok": True, "challenge_url": build_totp_lab_challenge(config, excel_row, workbook_path=config.workflow_excel)}
         except TotpLabError as exc:
             return {"ok": False, "error": exc.code, "fatal": False}
         except ConfigError:
@@ -68,7 +68,7 @@ class HostApplication:
             return {"ok": False, "error": "request_invalid", "fatal": False}
         try:
             config = load_config(self.config_path)
-            challenge = build_sms_lab_challenge(config, excel_row)
+            challenge = build_sms_lab_challenge(config, excel_row, workbook_path=config.workflow_excel)
             return {"ok": True, "phone": challenge.phone, "challenge_url": challenge.challenge_url}
         except SmsLabError as exc:
             return {"ok": False, "error": exc.code, "fatal": False}
@@ -83,7 +83,7 @@ class HostApplication:
             return {"ok": False, "error": "request_invalid", "fatal": False}
         try:
             config = load_config(self.config_path)
-            credentials = read_workflow_credentials(config.input_excel, excel_row)
+            credentials = read_workflow_credentials(config.workflow_excel, excel_row)
             return {"ok": True, "username": credentials.username, "password": credentials.password}
         except WorkflowCredentialsError as exc:
             return {"ok": False, "error": exc.code, "fatal": False}

@@ -70,11 +70,11 @@ def _has_unsafe_url_character(value: str) -> bool:
     return any(character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
-def build_sms_lab_challenge(config: Config, excel_row: int) -> SmsLabChallenge:
+def build_sms_lab_challenge(config: Config, excel_row: int, *, workbook_path: str | Path | None = None) -> SmsLabChallenge:
     if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 2:
         raise SmsLabError("excel_row_invalid")
 
-    rows = _load_first_sheet_rows(Path(config.input_excel))
+    rows = _load_first_sheet_rows(Path(workbook_path or config.input_excel))
     values = next((values for row_number, values in rows if row_number == excel_row), None)
     if values is None:
         raise SmsLabError("account_row_not_found")

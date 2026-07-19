@@ -39,14 +39,14 @@ def _load_first_sheet_rows(path: Path) -> list[tuple[int, list[str]]]:
     return next(iter(workbook.values()), [])
 
 
-def build_totp_lab_challenge(config: Config, excel_row: int) -> str:
+def build_totp_lab_challenge(config: Config, excel_row: int, *, workbook_path: str | Path | None = None) -> str:
     if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 2:
         raise TotpLabError("excel_row_invalid")
     base_url = _validate_base_url(config.totp_lab_url)
     if not config.totp_lab_test_hook or config.totp_lab_test_hook == TEST_HOOK_PLACEHOLDER:
         raise TotpLabError("totp_test_hook_not_configured")
 
-    rows = _load_first_sheet_rows(Path(config.input_excel))
+    rows = _load_first_sheet_rows(Path(workbook_path or config.input_excel))
     values = next((values for row_number, values in rows if row_number == excel_row), None)
     if values is None:
         raise TotpLabError("account_row_not_found")

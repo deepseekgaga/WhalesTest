@@ -21,6 +21,7 @@ class HostProtocolTests(unittest.TestCase):
             "url_column": "CC地址",
             "txt_directory": str(directory / "txt"),
             "output_excel": str(directory / "summary.xlsx"),
+            "workflow_input_excel": str(input_path),
             "field_mappings": {"A": "", "B": "", "C": "", "D": ""},
         }
         if extra:
@@ -117,6 +118,19 @@ class HostProtocolTests(unittest.TestCase):
             self.assertEqual(result, {"ok": True, "username": "alice", "password": "pass"})
             self.assertNotIn("never-return-this", str(result))
 
+    def test_workflow_credentials_use_the_generated_workbook(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "source.xlsx"
+            workflow_path = directory / "generated.xlsx"
+            write_xlsx(input_path, [["Username", "Password"], ["source-user", "source-pass"]])
+            write_xlsx(workflow_path, [["Username", "Password"], ["generated-user", "generated-pass"]])
+            app = HostApplication(self._write_totp_config(directory, input_path, {"workflow_input_excel": str(workflow_path)}))
+
+            result = app.dispatch({"command": "get_workflow_credentials", "excel_row": 2})
+
+            self.assertEqual(result, {"ok": True, "username": "generated-user", "password": "generated-pass"})
+
     def test_get_workflow_credentials_rejects_invalid_requests_without_echoing_values(self):
         cases = [
             {"command": "get_workflow_credentials", "excel_row": 1},
@@ -178,6 +192,21 @@ class HostProtocolTests(unittest.TestCase):
                     "challenge_url": "http://totp-lab.local/JBSWY3D%2F%E6%B5%8B%E8%AF%95?test_hook=lab-hook",
                 },
             )
+
+    def test_get_totp_lab_challenge_uses_the_generated_workbook(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "source.xlsx"
+            workflow_path = directory / "generated.xlsx"
+            write_xlsx(input_path, [["header", "", ""], ["source", "pass", "SOURCE"]])
+            write_xlsx(workflow_path, [["header", "", ""], ["generated", "pass", "GENERATED"]])
+            config_path = self._write_totp_config(
+                directory,
+                input_path,
+                {"workflow_input_excel": str(workflow_path), "totp_lab_url": "http://totp-lab.local/", "totp_lab_test_hook": "lab-hook"},
+            )
+            result = HostApplication(config_path).dispatch({"command": "get_totp_lab_challenge", "excel_row": 2})
+            self.assertEqual(result["challenge_url"], "http://totp-lab.local/GENERATED?test_hook=lab-hook")
 
     def test_get_totp_lab_challenge_rejects_invalid_requests_without_echoing_values(self):
         result = HostApplication("unused.json").dispatch({
