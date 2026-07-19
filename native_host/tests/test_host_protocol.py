@@ -129,6 +129,37 @@ class HostProtocolTests(unittest.TestCase):
                 self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
                 self.assertNotIn("leaked-user", str(result))
 
+    def test_get_workflow_credentials_reader_errors_are_nonfatal_without_echoing_cells(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            missing_path = directory / "missing.xlsx"
+            invalid_path = directory / "invalid.xlsx"
+            invalid_path.write_bytes(b"not an xlsx")
+            missing_row_path = directory / "missing-row.xlsx"
+            write_xlsx(missing_row_path, [["Username", "Password", "Other"], ["alice", "pass", "private-note"]])
+            blank_username_path = directory / "blank-username.xlsx"
+            write_xlsx(blank_username_path, [["Username", "Password", "Other"], ["", "hidden-pass", "private-note"]])
+            blank_password_path = directory / "blank-password.xlsx"
+            write_xlsx(blank_password_path, [["Username", "Password", "Other"], ["hidden-user", "", "private-note"]])
+
+            cases = [
+                (missing_path, 2, "input_excel_missing", []),
+                (invalid_path, 2, "input_excel_invalid", []),
+                (missing_row_path, 9, "excel_exhausted", ["alice", "pass", "private-note"]),
+                (blank_username_path, 2, "credentials_invalid", ["hidden-pass", "private-note"]),
+                (blank_password_path, 2, "credentials_invalid", ["hidden-user", "private-note"]),
+            ]
+            for input_path, excel_row, error, sensitive_values in cases:
+                with self.subTest(error=error, input_path=input_path.name):
+                    app = HostApplication(self._write_totp_config(directory, input_path))
+                    result = app.dispatch({"command": "get_workflow_credentials", "excel_row": excel_row})
+
+                    self.assertEqual(result, {"ok": False, "error": error, "fatal": False})
+                    self.assertNotIn("username", result)
+                    self.assertNotIn("password", result)
+                    for value in sensitive_values:
+                        self.assertNotIn(value, str(result))
+
     def test_get_totp_lab_challenge_returns_only_the_constructed_url(self):
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
