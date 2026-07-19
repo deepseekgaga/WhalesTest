@@ -73,6 +73,7 @@ function makeChrome({
   requestReject = null,
   submitResult = { ok: true },
   submitPromise = null,
+  registerReject = null,
   registerResult = { ok: true },
   cancelResult = { ok: true },
   cancelPromise = null,
@@ -200,6 +201,7 @@ function makeChrome({
           }
           if (details.func.name === "registerSmsOnPage") {
             if (!incognitoTab.activeTabGranted) throw new Error("active_tab_missing");
+            if (registerReject) throw new Error(registerReject);
             return [{ result: registerResult }];
           }
           if (details.func.name === "requestSmsOnPage") {
@@ -311,7 +313,7 @@ test("validates mother, target, row, and activeTab grant before opening helper w
     ["mother_tab_incognito", { motherTab: { id: 10, windowId: 1, index: 3, active: true, incognito: true } }],
     ["incognito_tab_missing", { incognitoTab: null }],
     ["incognito_tab_required", { incognitoTab: { id: 20, windowId: 2, index: 1, active: false, incognito: false, activeTabGranted: true } }],
-    ["incognito_active_tab_required", { incognitoTab: { id: 20, windowId: 2, index: 1, active: false, incognito: true, activeTabGranted: false } }],
+    ["target_host_permission_required", { incognitoTab: { id: 20, windowId: 2, index: 1, active: false, incognito: true, activeTabGranted: false } }],
   ]) {
     const chrome = makeChrome(overrides);
     const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
@@ -399,13 +401,28 @@ test("request registration is cancelled when request executeScript rejects befor
 
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
-  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "sms_page_action_failed" });
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "target_host_permission_required" });
   assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
     "probeSmsOnPage",
     "registerSmsOnPage",
     "requestSmsOnPage",
     "cancelSmsOnPage",
   ]);
+});
+
+test("maps SMS target registration injection denial without opening a helper", async () => {
+  const chrome = makeChrome({ registerReject: "cannot access target host" });
+  const controller = createSmsLabController(chrome, { makeRunId: () => "run-1", selectors: configuredSelectors });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "target_host_permission_required" });
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), [
+    "probeSmsOnPage",
+    "registerSmsOnPage",
+  ]);
+  assert.deepEqual(chrome.createdTabs, []);
+  assert.deepEqual(chrome.removedTabs, []);
 });
 
 test("SMS page context reset after registration fails the run without marking cancelled", async () => {

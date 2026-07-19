@@ -392,14 +392,26 @@ test("returns request_invalid for identical mother and target tab ids without cr
   assert.equal(chrome.removedTabs.length, 0);
 });
 
-test("returns incognito_active_tab_required when the target incognito tab has no activeTab grant", async () => {
+test("returns request_invalid for the physical header row without opening a helper", async () => {
+  const chrome = makeChrome();
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 1 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "request_invalid" });
+  assert.equal(chrome.nativeMessages.length, 0);
+  assert.equal(chrome.targetExecutions.length, 0);
+  assert.equal(chrome.createdTabs.length, 0);
+  assert.equal(chrome.removedTabs.length, 0);
+});
+
+test("returns target_host_permission_required when the target incognito tab injection is denied", async () => {
   const chrome = makeChrome({
     incognitoTab: { id: 20, windowId: 2, index: 1, active: false, incognito: true, activeTabGranted: false },
   });
   const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
   const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
 
-  assert.equal(result.error, "incognito_active_tab_required");
+  assert.equal(result.error, "target_host_permission_required");
   assert.equal(chrome.createdTabs.length, 0);
   assert.equal(chrome.removedTabs.length, 0);
 });

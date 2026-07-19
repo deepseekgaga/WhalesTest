@@ -383,6 +383,49 @@ test("rejects caller-supplied challenge URLs or secrets", async () => {
   assert.deepEqual(response, { ok: false, error: "request_invalid" });
 });
 
+test("rejects invalid TOTP Lab route identifiers before controller work", async () => {
+  for (const message of [
+    { type: "run_totp_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 1 },
+    { type: "run_totp_lab", motherTabId: 10, incognitoTabId: 20, excelRow: true },
+  ]) {
+    const chrome = makeLabChrome();
+    createExtensionRuntime(chrome);
+    const response = await new Promise((resolve) => {
+      const keepChannelOpen = chrome.messageListener(message, { id: "ext" }, resolve);
+      assert.equal(keepChannelOpen, false);
+    });
+
+    assert.deepEqual(response, { ok: false, error: "request_invalid" });
+    assert.deepEqual(chrome.nativeMessages, []);
+    assert.deepEqual(chrome.executions, []);
+    assert.deepEqual(chrome.createdTabs, []);
+  }
+});
+
+test("returns target_host_permission_required through the TOTP Lab route when target injection is denied", async () => {
+  const chrome = makeLabChrome({
+    targetTab: { id: 20, windowId: 2, index: 1, active: true, incognito: true, activeTabGranted: false },
+  });
+  createExtensionRuntime(chrome);
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.messageListener(
+      { type: "run_totp_lab", motherTabId: 10, incognitoTabId: 20, excelRow: 2 },
+      { id: "ext" },
+      resolve,
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.result, {
+    state: "FAILED",
+    runId: response.result.runId,
+    error: "target_host_permission_required",
+  });
+  assert.deepEqual(chrome.nativeMessages, []);
+  assert.deepEqual(chrome.createdTabs, []);
+});
+
 test("exposes non-sensitive TOTP Lab state", async () => {
   const chrome = makeLabChrome();
   createExtensionRuntime(chrome);

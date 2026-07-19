@@ -246,6 +246,10 @@ function isPositiveInteger(value) {
   return Number.isInteger(value) && typeof value !== "boolean" && value >= 1;
 }
 
+function isWorkbookDataRow(value) {
+  return Number.isInteger(value) && typeof value !== "boolean" && value >= 2;
+}
+
 function hasExactKeys(message, allowedKeys) {
   const keys = Object.keys(message ?? {});
   return keys.length > 0 && keys.every((key) => allowedKeys.has(key));
@@ -266,18 +270,17 @@ export function createExtensionRuntime(api, options = {}) {
   const allowedSmsLabStateKeys = new Set(["type"]);
 
   function validateTotpLabMessage(message) {
-    const keys = Object.keys(message ?? {});
-    if (keys.some((key) => !allowedTotpLabKeys.has(key))) return false;
-    return Number.isInteger(message?.motherTabId) && Number.isInteger(message?.incognitoTabId) && Number.isInteger(message?.excelRow);
+    return hasExactKeys(message, allowedTotpLabKeys) &&
+      isPositiveInteger(message?.motherTabId) &&
+      isPositiveInteger(message?.incognitoTabId) &&
+      isWorkbookDataRow(message?.excelRow);
   }
 
   function validateSmsLabRunMessage(message) {
     return hasExactKeys(message, allowedSmsLabRunKeys) &&
       isPositiveInteger(message?.motherTabId) &&
       isPositiveInteger(message?.incognitoTabId) &&
-      Number.isInteger(message?.excelRow) &&
-      typeof message.excelRow !== "boolean" &&
-      message.excelRow >= 2;
+      isWorkbookDataRow(message?.excelRow);
   }
 
   function validateSmsLabCancelMessage(message) {

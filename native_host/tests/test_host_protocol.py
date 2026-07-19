@@ -188,6 +188,24 @@ class HostProtocolTests(unittest.TestCase):
         self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
         self.assertNotIn("sensitive", str(result))
 
+    def test_get_totp_lab_challenge_rejects_extra_fields_before_loading_workbook(self):
+        extras = {
+            "secret": "sensitive-secret",
+            "challenge_url": "http://totp-lab.local/private",
+            "code": "123456",
+            "unexpected": "sensitive-value",
+        }
+        for key, value in extras.items():
+            with self.subTest(key=key):
+                result = HostApplication("missing-config.json").dispatch({
+                    "command": "get_totp_lab_challenge",
+                    "excel_row": 2,
+                    key: value,
+                })
+
+                self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+                self.assertNotIn(str(value), str(result))
+
     def test_get_sms_lab_challenge_returns_only_phone_and_url_from_exact_row(self):
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)

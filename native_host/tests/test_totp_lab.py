@@ -68,11 +68,13 @@ class TotpLabTests(unittest.TestCase):
             url = build_totp_lab_challenge(self.config(directory, workbook), 5)
             self.assertEqual(url, "http://totp-lab.local/A%20B%2F%2B%E6%B5%8B?test_hook=hook%20%2F%201")
 
-    def test_rejects_non_positive_or_boolean_excel_rows(self):
+    def test_rejects_header_non_positive_or_boolean_excel_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             workbook = Path(directory) / "accounts.xlsx"
             write_xlsx(workbook, [["header", "", "secret"]])
             config = self.config(directory, workbook)
+            with self.assertRaisesRegex(TotpLabError, "excel_row_invalid"):
+                build_totp_lab_challenge(config, 1)
             with self.assertRaisesRegex(TotpLabError, "excel_row_invalid"):
                 build_totp_lab_challenge(config, 0)
             with self.assertRaisesRegex(TotpLabError, "excel_row_invalid"):
@@ -93,26 +95,26 @@ class TotpLabTests(unittest.TestCase):
             workbook = Path(directory) / "accounts.xlsx"
             write_xlsx(workbook, [["header", "", "secret"]])
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
-                build_totp_lab_challenge(self.config(directory, workbook, url="HTTP://totp-lab.local/"), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, url="HTTP://totp-lab.local/"), 2)
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
-                build_totp_lab_challenge(self.config(directory, workbook, url="https://totp-lab.local/"), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, url="https://totp-lab.local/"), 2)
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
-                build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/path"), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/path"), 2)
             with self.assertRaisesRegex(TotpLabError, "totp_lab_url_invalid"):
-                build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/?debug=1"), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, url="http://totp-lab.local/?debug=1"), 2)
             with self.assertRaisesRegex(TotpLabError, "totp_test_hook_not_configured"):
-                build_totp_lab_challenge(self.config(directory, workbook, hook=""), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, hook=""), 2)
             with self.assertRaisesRegex(TotpLabError, "totp_test_hook_not_configured"):
-                build_totp_lab_challenge(self.config(directory, workbook, hook=TEST_HOOK_PLACEHOLDER), 1)
+                build_totp_lab_challenge(self.config(directory, workbook, hook=TEST_HOOK_PLACEHOLDER), 2)
 
     def test_rejects_incomplete_or_malformed_xlsx_without_leaking_parser_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             missing_rels = Path(directory) / "missing-rels.xlsx"
             write_incomplete_xlsx_without_workbook_rels(missing_rels)
             with self.assertRaisesRegex(TotpLabError, "input_excel_invalid"):
-                build_totp_lab_challenge(self.config(directory, missing_rels), 1)
+                build_totp_lab_challenge(self.config(directory, missing_rels), 2)
 
             malformed_sheet = Path(directory) / "malformed-sheet.xlsx"
             write_malformed_sheet_xlsx(malformed_sheet)
             with self.assertRaisesRegex(TotpLabError, "input_excel_invalid"):
-                build_totp_lab_challenge(self.config(directory, malformed_sheet), 1)
+                build_totp_lab_challenge(self.config(directory, malformed_sheet), 2)

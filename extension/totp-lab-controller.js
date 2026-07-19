@@ -180,7 +180,7 @@ export function createTotpLabController(api, options = {}) {
       !Number.isInteger(excelRow) ||
       motherTabId < 1 ||
       incognitoTabId < 1 ||
-      excelRow < 1 ||
+      excelRow < 2 ||
       motherTabId === incognitoTabId
     ) {
       throw new Error("request_invalid");
@@ -206,9 +206,9 @@ export function createTotpLabController(api, options = {}) {
         func: registerTotpOnPage,
         args: [{ runId: run.runId }],
       });
-      if (!registerResults?.[0]?.result?.ok) throw new Error("incognito_active_tab_required");
+      if (!registerResults?.[0]?.result?.ok) throw new Error("target_host_permission_required");
     } catch {
-      throw new Error("incognito_active_tab_required");
+      throw new Error("target_host_permission_required");
     }
   }
 
@@ -348,17 +348,23 @@ export function createTotpLabController(api, options = {}) {
       run.state = "FILLING_TOTP";
       last = publicState(run);
 
-      const fillResults = await abortable(api.scripting.executeScript({
-        target: { tabId: incognitoTabId },
-        world: "ISOLATED",
-        func: fillTotpOnPage,
-        args: [{
-          code,
-          runId: run.runId,
-          requireExistingToken: true,
-          timeoutMs: FILL_TIMEOUT_MS,
-        }],
-      }), run.abort.signal);
+      let fillResults;
+      try {
+        fillResults = await abortable(api.scripting.executeScript({
+          target: { tabId: incognitoTabId },
+          world: "ISOLATED",
+          func: fillTotpOnPage,
+          args: [{
+            code,
+            runId: run.runId,
+            requireExistingToken: true,
+            timeoutMs: FILL_TIMEOUT_MS,
+          }],
+        }), run.abort.signal);
+      } catch (error) {
+        if (error?.message === "cancelled") throw error;
+        throw new Error("target_host_permission_required");
+      }
       throwIfCancelled(run);
       const fillResult = fillResults?.[0]?.result;
       if (!fillResult?.ok) throw new Error(fillResult?.error || "otp_page_action_failed");

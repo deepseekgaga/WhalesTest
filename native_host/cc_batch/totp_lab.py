@@ -40,7 +40,7 @@ def _load_first_sheet_rows(path: Path) -> list[tuple[int, list[str]]]:
 
 
 def build_totp_lab_challenge(config: Config, excel_row: int) -> str:
-    if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 1:
+    if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 2:
         raise TotpLabError("excel_row_invalid")
     base_url = _validate_base_url(config.totp_lab_url)
     if not config.totp_lab_test_hook or config.totp_lab_test_hook == TEST_HOOK_PLACEHOLDER:

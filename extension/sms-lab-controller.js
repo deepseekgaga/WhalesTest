@@ -292,22 +292,28 @@ export function createSmsLabController(api, options = {}) {
         func: probeSmsOnPage,
         args: [{ runId }],
       });
-      if (!results?.[0]?.result?.ok) throw new Error("incognito_active_tab_required");
+      if (!results?.[0]?.result?.ok) throw new Error("target_host_permission_required");
     } catch {
-      throw new Error("incognito_active_tab_required");
+      throw new Error("target_host_permission_required");
     }
   }
 
   async function registerTargetToken(run) {
     throwIfCancelled(run);
-    const results = await abortable(api.scripting.executeScript({
-      target: { tabId: run.incognitoTabId },
-      world: "ISOLATED",
-      func: registerSmsOnPage,
-      args: [{ runId: run.runId }],
-    }), run.abort.signal);
+    let results;
+    try {
+      results = await abortable(api.scripting.executeScript({
+        target: { tabId: run.incognitoTabId },
+        world: "ISOLATED",
+        func: registerSmsOnPage,
+        args: [{ runId: run.runId }],
+      }), run.abort.signal);
+    } catch (error) {
+      if (error?.message === "cancelled") throw error;
+      throw new Error("target_host_permission_required");
+    }
     throwIfCancelled(run);
-    if (!results?.[0]?.result?.ok) throw new Error("incognito_active_tab_required");
+    if (!results?.[0]?.result?.ok) throw new Error("target_host_permission_required");
     run.pageTokenRegistered = true;
   }
 
@@ -323,7 +329,7 @@ export function createSmsLabController(api, options = {}) {
       }), run.abort.signal);
     } catch (error) {
       if (error?.message === "cancelled") throw error;
-      throw new Error("sms_page_action_failed");
+      throw new Error("target_host_permission_required");
     }
     throwIfCancelled(run);
     const result = results?.[0]?.result;
