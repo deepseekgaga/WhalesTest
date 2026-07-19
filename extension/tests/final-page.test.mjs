@@ -84,6 +84,27 @@ test("rejects ambiguous or missing Accept buttons", async () => {
   assert.equal(missing.error, "accept_button_missing");
 });
 
+test("waits within the deadline for a delayed Accept button", async () => {
+  const accept = element({ text: "Accept" });
+  const many = { "button,[role='button']": [] };
+  let slept = 0;
+  const env = environment({ many });
+  env.sleep = async () => {
+    slept += 1;
+    many["button,[role='button']"] = [accept];
+  };
+
+  const result = await clickAcceptOnPage({
+    selectors: { acceptButton: "" },
+    timeoutMs: 50,
+    quietMs: 1,
+  }, env);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(accept.clicked, 1);
+  assert.ok(slept > 0);
+});
+
 test("detects final page readiness by configured marker or document readiness only", async () => {
   const byMarker = await detectFinalPageOnPage({ selectors: { finalPageReady: ".home" } }, environment({ one: { ".home": element() } }));
   assert.deepEqual(byMarker, { ok: true });

@@ -27,6 +27,17 @@ function hiddenElement(kind, options = {}) {
   return node;
 }
 
+function readonlyElement(kind) {
+  const node = element();
+  if (kind === "property") {
+    node.readOnly = true;
+    return node;
+  }
+  const originalGetAttribute = node.getAttribute.bind(node);
+  node.getAttribute = (name) => (name === "readonly" ? "" : originalGetAttribute(name));
+  return node;
+}
+
 test("fills exact username and password fields and clicks one configured submit", async () => {
   const username = element();
   const password = element();
@@ -76,6 +87,32 @@ test("detects rejected input when the page refuses exact credential values", asy
   }, environment({ one: { "#username": username, "#password": element(), "#submit": element() } }));
 
   assert.equal(result.error, "login_input_rejected");
+});
+
+test("rejects readonly username or password inputs before write side effects", async () => {
+  for (const [field, kind] of [
+    ["username", "property"],
+    ["username", "attribute"],
+    ["password", "property"],
+    ["password", "attribute"],
+  ]) {
+    const username = field === "username" ? readonlyElement(kind) : element();
+    const password = field === "password" ? readonlyElement(kind) : element();
+    const submit = element();
+
+    const result = await submitLoginOnPage({
+      username: "alice",
+      password: "secret",
+      selectors: loginSelectors,
+    }, environment({ one: { "#username": username, "#password": password, "#submit": submit } }));
+
+    assert.equal(result.error, "login_input_rejected", `${field} ${kind}`);
+    assert.equal(submit.clicked, 0, `${field} ${kind}`);
+    assert.equal(username.value, "", `${field} ${kind}`);
+    assert.equal(password.value, "", `${field} ${kind}`);
+    assert.deepEqual(username.events, [], `${field} ${kind}`);
+    assert.deepEqual(password.events, [], `${field} ${kind}`);
+  }
 });
 
 test("uses a unique visible enabled submit fallback and rejects ambiguity", async () => {

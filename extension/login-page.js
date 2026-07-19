@@ -137,6 +137,7 @@ export async function submitLoginOnPage({ runId, requireExistingToken = false, u
   };
   const setValue = async (node, value) => {
     if (checkAbort()) return { error: "workflow_cancelled" };
+    if (node.readOnly === true || node.getAttribute?.("readonly") !== null) return { error: "login_input_rejected" };
     let prototype = Object.getPrototypeOf(node);
     let assigned = false;
     while (prototype) {
@@ -166,6 +167,14 @@ export async function submitLoginOnPage({ runId, requireExistingToken = false, u
   if (usernameField.error) return { ok: false, error: usernameField.error };
   const passwordField = await waitFor(() => uniqueBySelector(configured.loginPassword), "element_missing");
   if (passwordField.error) return { ok: false, error: passwordField.error };
+  if (
+    usernameField.element.readOnly === true ||
+    usernameField.element.getAttribute?.("readonly") !== null ||
+    passwordField.element.readOnly === true ||
+    passwordField.element.getAttribute?.("readonly") !== null
+  ) {
+    return { ok: false, error: "login_input_rejected" };
+  }
   const usernameSet = await setValue(usernameField.element, username);
   if (usernameSet.error) return { ok: false, error: usernameSet.error };
   const passwordSet = await setValue(passwordField.element, password);

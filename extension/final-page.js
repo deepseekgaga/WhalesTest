@@ -70,6 +70,33 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
       }
     });
   };
+  const guardedSleep = async (ms) => {
+    if (checkAbort()) return { error: "workflow_cancelled" };
+    const remaining = remainingMs();
+    if (remaining <= 0 && !env.waitForQuiet) return { error: "page_not_stable" };
+    return new Promise((resolve, reject) => {
+      let timeoutTimer;
+      let deadlineTimer;
+      let settled = false;
+      const done = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutTimer);
+        clearTimeout(deadlineTimer);
+        signal?.removeEventListener?.("abort", onAbort);
+        resolve(value);
+      };
+      const onAbort = () => done({ error: "workflow_cancelled" });
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      deadlineTimer = setTimeout(() => done({ error: "page_not_stable" }), Math.max(1, remaining));
+      try {
+        const waited = env.sleep ? Promise.resolve(sleep(ms)) : new Promise((sleepResolve) => { timeoutTimer = setTimeout(sleepResolve, ms); });
+        waited.then(() => done({ ok: true }), reject);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  };
   const allBySelector = (selector) => {
     if (typeof selector !== "string" || selector.length === 0) return { nodes: [] };
     try {
@@ -100,18 +127,28 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
     return { element: matches[0] ?? null };
   };
 
-  let accept = uniqueBySelector(configured.acceptButton);
-  if (accept.error) return { ok: false, error: accept.error };
-  if (!accept.element) accept = uniqueAcceptFallback();
-  if (accept.error) return { ok: false, error: accept.error };
-  if (!accept.element) return { ok: false, error: "accept_button_missing" };
-  if (checkAbort()) return { ok: false, error: "workflow_cancelled" };
-  accept.element.scrollIntoView?.({ block: "center" });
-  if (checkAbort()) return { ok: false, error: "workflow_cancelled" };
-  accept.element.click?.();
-  const quiet = await boundedQuiet();
-  if (quiet.error) return { ok: false, error: quiet.error };
-  return { ok: true };
+  while (true) {
+    let accept = uniqueBySelector(configured.acceptButton);
+    if (accept.error) return { ok: false, error: accept.error };
+    if (!accept.element) accept = uniqueAcceptFallback();
+    if (accept.error) return { ok: false, error: accept.error };
+    if (accept.element) {
+      if (checkAbort()) return { ok: false, error: "workflow_cancelled" };
+      accept.element.scrollIntoView?.({ block: "center" });
+      if (checkAbort()) return { ok: false, error: "workflow_cancelled" };
+      accept.element.click?.();
+      const quiet = await boundedQuiet();
+      if (quiet.error) return { ok: false, error: quiet.error };
+      return { ok: true };
+    }
+    if (remainingMs() <= 0) break;
+    const quiet = await boundedQuiet();
+    if (quiet.error) return { ok: false, error: quiet.error };
+    const slept = await guardedSleep(50);
+    if (slept.error === "workflow_cancelled") return { ok: false, error: slept.error };
+    if (slept.error === "page_not_stable") break;
+  }
+  return { ok: false, error: "accept_button_missing" };
 }
 
 export async function detectFinalPageOnPage({ runId, requireExistingToken = false, selectors, timeoutMs = 30_000, quietMs = 500 } = {}, env = {}) {
