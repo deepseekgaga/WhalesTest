@@ -186,7 +186,12 @@ test("isRetryableWorkflowError only accepts the bounded retryable workflow codes
 
 test("safeWorkflowError keeps only allowlisted workflow codes and hides raw secret fragments", () => {
   assert.equal(safeWorkflowError(new Error("page_not_stable: retry later"), "workflow_failed"), "page_not_stable");
+  assert.equal(safeWorkflowError(new Error("page_not_stable:details"), "workflow_failed"), "page_not_stable");
   assert.equal(safeWorkflowError(new Error("element_not_found\nsecret=value"), "workflow_failed"), "element_not_found");
+  assert.equal(safeWorkflowError(new Error("page_not_stable1"), "workflow_failed"), "workflow_failed");
+  assert.equal(safeWorkflowError(new Error("native_host_timeout2"), "workflow_failed"), "workflow_failed");
   assert.equal(safeWorkflowError(new Error("secret=value"), "workflow_failed"), "workflow_failed");
   assert.equal(safeWorkflowError(new Error("unknown_code: secret=value"), "workflow_failed"), "workflow_failed");
+  assert.equal(safeWorkflowError(null, "workflow_failed"), "workflow_failed");
+  assert.equal(safeWorkflowError(undefined, "workflow_failed"), "workflow_failed");
 });
