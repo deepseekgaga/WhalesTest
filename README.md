@@ -1,8 +1,8 @@
 # 授权隔离本地靶场
 
-这是一个仅面向已授权测试环境的 Chrome MV3 + Native Host + Excel 物理行靶场。它把母页授权、无痕登录、TOTP、短信辅助页和最终 URL 回填串成一条受控流程，并保留一个独立的旧 CC 批处理分区。
+这是一个仅面向已授权测试环境的 Chrome MV3 + Native Host + Excel 物理行靶场。一个扩展内包含两个手动阶段：CC 批量下载与 TXT 汇总，以及母页授权、无痕登录、TOTP、短信辅助页和最终 URL 回填。
 
-当前 Chrome 扩展显示名为“授权登录与 MFA 测试工作流”，与旧的“CC 批量下载与 TXT 汇总”扩展区分开。
+当前 Chrome 扩展显示名为“Whalestest 双阶段授权测试工具”，在同一个弹窗中提供“CC 批量下载与 TXT 汇总”和“授权登录与 MFA 测试工作流”两个手动阶段按钮。
 
 它不用于未授权系统，也不包含商业验证码绕过、滑块绕过、系统剪贴板读取或通配站点访问。
 
@@ -58,6 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 - `url_column`：旧 CC 批处理的 URL 列名。
 - `txt_directory` / `download_directory`：旧 CC 批处理输出目录。
 - `output_excel`：旧 CC 批处理输出工作簿。
+- `workflow_input_excel`：授权 MFA 阶段使用的工作簿；缺省时读取 `output_excel`，即第一阶段生成的工作簿。
 - `download_timeout_seconds`：下载等待超时。
 - `field_mappings`：旧 CC 批处理字段映射。
 - `field_continuation_lines`：旧 CC 批处理续行规则。
@@ -117,6 +118,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 - `motherFinalConfirmButton`
 - `motherFinalSuccess`
 
+授权 MFA 阶段读取 CC 阶段生成的 `workflow_input_excel`。每次点击授权工作流按钮都会把游标重置到物理第 2 行，第一行始终作为表头跳过；不会沿用上一次运行的行号或序号。
+
 `auth-target.local` 目前仍是占位 origin。真实联调前必须把 `extension/manifest.json` 里的这个 origin 替换为实际授权站点的固定 origin，并同步 `extension/workflow-controller.js` 的 `targetOrigin`。
 
 ## 弹窗
@@ -126,17 +129,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 | 分区 | 用途 | 消息 |
 | --- | --- | --- |
 | 授权登录工作流 | 运行母页到无痕登录再回填母页的主流程 | `start_workflow` / `cancel_workflow` / `workflow_state` |
-| 旧 CC 批处理 | 旧的批量下载分区 | `start` / `state` |
+| CC 批量下载与 TXT 汇总 | 第一阶段批量下载分区 | `start` / `state` |
 
 互斥规则：
 
-- 任一分区运行时，另一个分区的启动按钮会被禁用。
-- 工作流和旧 CC 批处理不会同时起跑。
+- 任一阶段运行时，另一个阶段的启动按钮会被禁用。
+- 两个阶段不会同时起跑，也不会自动互相触发。
 
 状态展示：
 
 - 授权工作流显示状态、序号、Excel 行、阶段和错误码。
-- 旧 CC 批处理显示状态、进度、成功数、失败数、当前 URL 和最近错误。
+- CC 阶段显示状态、进度、成功数、失败数、当前 URL 和最近错误。
 
 ## TOTP / SMS 辅助页
 
@@ -199,7 +202,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 | `totp_stage_not_reached` | 没有观测到 TOTP 阶段。 |
 | `mother_backfill_failed` | 最终 URL 回填母页失败。 |
 | `incognito_window_ambiguous` | 找到了多个同批次无痕 handoff 标签。 |
-| `another_workflow_running` | 旧 CC 批处理或另一个授权工作流已经在运行。 |
+| `another_workflow_running` | CC 阶段或另一个授权工作流已经在运行。 |
 | `workflow_failed` | 内部调度、持久化或清理出现通用失败。 |
 | `page_not_stable` | 页面在限定时间内一直不稳定，未达到可操作状态。 |
 | `credentials_invalid` | 同一物理行的 A/B 凭据为空或无效。 |

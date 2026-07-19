@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp+iURrPldBa621ZFE/aoc5fuutQzrFHgMxRHnO/5tS+rbWWKuJ8fvBA4inp4tQjNMd+VpQ8GHI2QGi3AUNo5JIDhDxVLs8rxWQVChs2YAHejil/3L/N/M2jd8felF3iHXGVniyH32xh8KGvfkMVpDZOkStOLtiIu/8poDtzRPD/nIkOZKVh0f8M/siKk38qy7rj/cW5G4v5zAMgApLa/sNPePEiV8+4QR+Weu5wc1yyKXeWkndYhw9KkcSoOoyN2c1wvnk2CKrftO39j2BgG6Yj1HiswbnTSKMvZP220t511skdMSazBhwyW3x30NuX+Di4jJXOUDimr2R6gJCb6rwIDAQAB",
-  "name": "授权登录与 MFA 测试工作流",
+  "name": "Whalestest 双阶段授权测试工具",
   "version": "0.1.0",
-  "description": "用于授权隔离环境中的登录、TOTP 与短信双因素验证流程测试。",
+  "description": "在授权隔离环境中运行 CC 数据处理和登录 MFA 流程测试。",
   "permissions": ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"],
   "host_permissions": [
     "http://127.0.0.1:9527/*",
@@ -13,7 +13,7 @@
   ],
   "incognito": "spanning",
   "action": {
-    "default_title": "执行授权登录测试工作流",
+    "default_title": "打开 Whalestest 双阶段测试工具",
     "default_popup": "popup.html"
   },
   "background": {

@@ -441,9 +441,9 @@ test("suggests the configured subdirectory for active ZIP downloads", async () =
 
 test("declares only the fixed TOTP and SMS Lab hosts plus minimal extension permissions", async () => {
   const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
-  assert.equal(manifest.name, "授权登录与 MFA 测试工作流");
-  assert.equal(manifest.action.default_title, "执行授权登录测试工作流");
-  assert.equal(manifest.description, "用于授权隔离环境中的登录、TOTP 与短信双因素验证流程测试。");
+  assert.equal(manifest.name, "Whalestest 双阶段授权测试工具");
+  assert.equal(manifest.action.default_title, "打开 Whalestest 双阶段测试工具");
+  assert.equal(manifest.description, "在授权隔离环境中运行 CC 数据处理和登录 MFA 流程测试。");
   assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"]);
   assert.deepEqual(manifest.host_permissions, [
     "http://127.0.0.1:9527/*",
