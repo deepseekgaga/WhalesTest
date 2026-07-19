@@ -213,7 +213,12 @@ export function createWorkflowController(api, options = {}) {
     if (!isCurrent(activeSnapshot)) return false;
     if (!await persist({ ...state, ...patch, stage, attempt: 0, error: "" }, activeSnapshot)) return false;
     const scheduledSnapshot = snapshot();
-    await schedule(state.batchId, 0);
+    try {
+      await schedule(state.batchId, 0);
+    } catch {
+      await persist({ ...state, stage: "FAILED", error: "workflow_failed" }, scheduledSnapshot);
+      throw new Error("workflow_failed");
+    }
     if (!isCurrent(scheduledSnapshot)) await api.alarms?.clear?.(`${ALARM_PREFIX}${scheduledSnapshot.batchId}`);
     return true;
   }
@@ -302,24 +307,34 @@ export function createWorkflowController(api, options = {}) {
     }
 
     if (tab.incognito !== true) throw new Error("incognito_access_required");
-    const current = await api.tabs.get(tab.id);
-    if (!isCurrent(activeSnapshot)) return;
-    if (current.url === markerUrl) {
-      await api.tabs.update(tab.id, { url: authorizationUrl, active: true });
+    try {
+      const current = await api.tabs.get(tab.id);
       if (!isCurrent(activeSnapshot)) return;
-    } else {
-      let currentOrigin;
-      try {
-        currentOrigin = new URL(current.url).origin;
-      } catch {
-        throw new Error("authorization_origin_mismatch");
+      if (current.url === markerUrl) {
+        await api.tabs.update(tab.id, { url: authorizationUrl, active: true });
+        if (!isCurrent(activeSnapshot)) return;
+      } else {
+        let currentOrigin;
+        try {
+          currentOrigin = new URL(current.url).origin;
+        } catch {
+          throw new Error("authorization_origin_mismatch");
+        }
+        if (currentOrigin !== targetOrigin) throw new Error("authorization_origin_mismatch");
       }
-      if (currentOrigin !== targetOrigin) throw new Error("authorization_origin_mismatch");
+    } catch (error) {
+      await persist({ ...state, stage: "FAILED", error: safeError(error) }, activeSnapshot);
+      throw error;
     }
 
     if (!await persist({ ...state, stage: "LOGIN", attempt: 0, error: "" }, activeSnapshot)) return;
     const scheduledSnapshot = snapshot();
-    await schedule(state.batchId, 0);
+    try {
+      await schedule(state.batchId, 0);
+    } catch {
+      await persist({ ...state, stage: "FAILED", error: "workflow_failed" }, scheduledSnapshot);
+      throw new Error("workflow_failed");
+    }
     if (!isCurrent(scheduledSnapshot)) await api.alarms?.clear?.(`${ALARM_PREFIX}${scheduledSnapshot.batchId}`);
   }
 
@@ -439,8 +454,8 @@ export function createWorkflowController(api, options = {}) {
     try {
       await runCurrentStage(activeSnapshot);
     } catch (error) {
-      if (!state || TERMINAL_STAGES.has(state.stage)) return;
-      await persist({ ...state, stage: "FAILED", error: safeError(error) });
+      if (!isCurrent(activeSnapshot)) return;
+      await persist({ ...state, stage: "FAILED", error: safeError(error) }, activeSnapshot);
     } finally {
       processing = false;
     }

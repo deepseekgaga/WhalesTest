@@ -313,6 +313,44 @@ test("does not let a cancelled in-flight stage transition or schedule after it r
   assert.equal(chrome.session.workflowState.error, "");
 });
 
+test("does not let an old rejected alarm poison a new batch after cancellation", async () => {
+  const chrome = makeChrome();
+  const heldPrepare = deferred();
+  let nextBatch = 1;
+  const controller = createWorkflowController(chrome, minimalOptions({
+    makeBatchId: () => `batch-000${nextBatch++}`,
+    requestNative: async () => ({ ok: true, username: "alice", password: "secret" }),
+    pageActions: {
+      prepareMother: async () => heldPrepare.promise,
+    },
+  }));
+
+  await controller.start();
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+  const oldAlarm = [...chrome.alarmsByName.values()][0];
+  chrome.alarmsByName.delete(oldAlarm.name);
+  const oldOnAlarm = controller.onAlarm(oldAlarm);
+  await tick();
+  await controller.cancel("batch-0001");
+
+  const batch2 = await controller.start();
+  assert.equal(batch2.batchId, "batch-0002");
+  assert.equal(batch2.state, "ROW_PREFLIGHT");
+  assert.equal(chrome.session.workflowState.batchId, "batch-0002");
+  assert.equal(chrome.alarmsByName.has("whalestest-workflow:batch-0002"), true);
+
+  heldPrepare.reject(new Error("element_missing"));
+  await oldOnAlarm;
+
+  assert.equal(controller.getState().batchId, "batch-0002");
+  assert.equal(controller.getState().state, "ROW_PREFLIGHT");
+  assert.equal(controller.getState().error, "");
+  assert.equal(chrome.session.workflowState.batchId, "batch-0002");
+  assert.equal(chrome.session.workflowState.stage, "ROW_PREFLIGHT");
+  assert.equal(chrome.session.workflowState.error, "");
+  assert.equal(chrome.alarmsByName.has("whalestest-workflow:batch-0002"), true);
+});
+
 test("maps unknown page action errors through an explicit allowlist", async () => {
   const chrome = makeChrome();
   const controller = createWorkflowController(chrome, minimalOptions({
