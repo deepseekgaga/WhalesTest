@@ -64,6 +64,16 @@ function makeChrome(options = {}) {
   return api;
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeLabChrome({
   motherTab = { id: 10, windowId: 1, index: 3, active: true, incognito: false },
   targetTab = { id: 20, windowId: 2, index: 1, active: true, incognito: true, activeTabGranted: true },
@@ -162,6 +172,8 @@ function makeWorkflowChrome({
   workflowState = { running: false, state: "IDLE", batchId: null, sequence: 0, excelRow: 0, error: "", updatedAt: null },
   ccRunning = false,
   rejectResumeAlarm = false,
+  ccBatchState = { running: ccRunning },
+  tabsQuery = async () => [{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }],
 } = {}) {
   const alarmListeners = [];
   const session = {};
@@ -190,7 +202,7 @@ function makeWorkflowChrome({
       connectNative() { throw new Error("native_host_unavailable"); },
     },
     tabs: {
-      async query() { return [{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }]; },
+      async query(query) { return tabsQuery(query); },
     },
     alarms: {
       onAlarm: { addListener(listener) { alarmListeners.push(listener); } },
@@ -200,7 +212,10 @@ function makeWorkflowChrome({
       async clear() { return true; },
     },
     storage: {
-      local: { async set() {}, async get() { return { ccBatchState: { running: ccRunning } }; } },
+      local: {
+        async set() {},
+        async get() { return { ccBatchState }; },
+      },
       session: {
         async get(key) { return { [key]: session[key] }; },
         async set(values) { Object.assign(session, structuredClone(values)); },
@@ -545,6 +560,52 @@ test("workflow start reports another_workflow_running while an old CC batch is r
 
   assert.equal(response.running, false);
   assert.equal(response.lastError, "another_workflow_running");
+});
+
+test("reserves a workflow lease before the controller start finishes so old CC start is blocked", async () => {
+  const heldTabsQuery = deferred();
+  const chrome = makeWorkflowChrome({
+    tabsQuery: async () => heldTabsQuery.promise,
+  });
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  const startResponse = new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+  await waitFor(() => chrome.alarmListeners.length === 1);
+
+  const ccResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+  assert.equal(ccResponse.lastError, "another_workflow_running");
+  heldTabsQuery.resolve([{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }]);
+  const workflowResponse = await startResponse;
+  assert.equal(workflowResponse.ok, true);
+  assert.equal(workflowResponse.result.state, "ROW_PREFLIGHT");
+});
+
+test("blocks workflow start when a persisted CC batch is marked running on startup", async () => {
+  const chrome = makeWorkflowChrome({
+    ccBatchState: { running: true },
+  });
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.state, "FAILED");
+  assert.equal(response.result.error, "another_workflow_running");
+  assert.equal(chrome.alarmListeners.length, 1);
+  assert.equal(chrome.session?.workflowState?.state ?? "IDLE", "IDLE");
 });
 
 test("routes run_totp_lab through the native host and injects into the requested tab", async () => {

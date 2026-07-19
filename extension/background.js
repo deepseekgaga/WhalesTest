@@ -278,6 +278,27 @@ export function createExtensionRuntime(api, options = {}) {
   const allowedWorkflowStartKeys = new Set(["type"]);
   const allowedWorkflowCancelKeys = new Set(["type", "batchId"]);
   const allowedWorkflowStateKeys = new Set(["type"]);
+  let activeLease = null;
+  let persistedCcRunning = false;
+  const ccStateReady = Promise.resolve(api.storage?.local?.get?.("ccBatchState"))
+    .then((state) => {
+      persistedCcRunning = Boolean(state?.ccBatchState?.running);
+    })
+    .catch(() => {
+      persistedCcRunning = false;
+    });
+
+  function currentCcRunning() {
+    return activeLease === "cc" || batchController.getState().running || persistedCcRunning;
+  }
+
+  function currentWorkflowRunning() {
+    return activeLease === "workflow" || workflowController.getState().running;
+  }
+
+  function syncWorkflowLease() {
+    activeLease = workflowController.getState().running ? "workflow" : activeLease === "workflow" ? null : activeLease;
+  }
 
   function validateTotpLabMessage(message) {
     return hasExactKeys(message, allowedTotpLabKeys) &&
@@ -302,8 +323,14 @@ export function createExtensionRuntime(api, options = {}) {
     return hasExactKeys(message, allowedSmsLabStateKeys);
   }
 
-  api.alarms?.onAlarm?.addListener?.((alarm) => { void workflowController.onAlarm(alarm); });
-  void workflowController.resume().catch(() => {});
+  api.alarms?.onAlarm?.addListener?.((alarm) => {
+    void workflowController.onAlarm(alarm)
+      .catch(() => {})
+      .finally(syncWorkflowLease);
+  });
+  void workflowController.resume()
+    .catch(() => {})
+    .finally(syncWorkflowLease);
 
   const listener = (message, sender, sendResponse) => {
     if (message?.type === "start_workflow" || message?.type === "cancel_workflow" || message?.type === "workflow_state") {
@@ -316,8 +343,26 @@ export function createExtensionRuntime(api, options = {}) {
           sendResponse({ ok: false, error: "request_invalid" });
           return false;
         }
-        void workflowController.start()
-          .then((result) => sendResponse({ ok: true, result }))
+        activeLease = "workflow";
+        void ccStateReady.then(async () => {
+          if (currentCcRunning()) {
+            activeLease = null;
+            return { ok: true, result: { ...workflowController.getState(), state: "FAILED", error: "another_workflow_running" } };
+          }
+          if (workflowController.getState().running) {
+            syncWorkflowLease();
+            return { ok: true, result: workflowController.getState() };
+          }
+          try {
+            const result = await workflowController.start();
+            syncWorkflowLease();
+            return { ok: true, result };
+          } catch (error) {
+            syncWorkflowLease();
+            if (!workflowController.getState().running) activeLease = null;
+            return { ok: false, error: safeRouteError(error, "workflow_route_failed") };
+          }
+        }).then((response) => sendResponse(response))
           .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }));
         return true;
       }
@@ -329,8 +374,13 @@ export function createExtensionRuntime(api, options = {}) {
           return false;
         }
         void workflowController.cancel(message.batchId)
-          .then((result) => sendResponse({ ok: true, result }))
-          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }));
+          .then((result) => {
+            syncWorkflowLease();
+            sendResponse({ ok: true, result });
+          })
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }))
+          .finally(syncWorkflowLease)
+          .catch(() => {});
         return true;
       }
       if (!hasExactKeys(message, allowedWorkflowStateKeys)) {
@@ -349,7 +399,7 @@ export function createExtensionRuntime(api, options = {}) {
       if (message.type === "run_totp") {
         void totpController.run(message)
           .then((result) => sendResponse({ ok: true, result }))
-          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error) }));
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }));
         return true;
       }
       void totpController.cancel(message.runId)
@@ -413,12 +463,19 @@ export function createExtensionRuntime(api, options = {}) {
       sendResponse({ ok: true, result: smsLabController.getState() });
       return false;
     }
-    if (message?.type === "start") {
-      if (workflowController.getState().running) {
+      if (message?.type === "start") {
+      if (currentWorkflowRunning() || persistedCcRunning) {
         sendResponse({ ...batchController.getState(), lastError: "another_workflow_running" });
         return false;
       }
-      void batchController.start();
+      activeLease = "cc";
+      void batchController.start()
+        .then(() => {
+          if (activeLease === "cc") activeLease = null;
+        })
+        .catch(() => {
+          if (activeLease === "cc") activeLease = null;
+        });
       sendResponse(batchController.getState());
       return false;
     }
