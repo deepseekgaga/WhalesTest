@@ -280,16 +280,26 @@ export function createExtensionRuntime(api, options = {}) {
   const allowedWorkflowStateKeys = new Set(["type"]);
   let activeLease = null;
   let persistedCcRunning = false;
+  let startupCcGuardPending = false;
+  let workflowBootstrapError = "";
+  let workflowAlarmError = "";
   const ccStateReady = Promise.resolve(api.storage?.local?.get?.("ccBatchState"))
     .then((state) => {
       persistedCcRunning = Boolean(state?.ccBatchState?.running);
+      startupCcGuardPending = persistedCcRunning;
     })
     .catch(() => {
       persistedCcRunning = false;
+      startupCcGuardPending = false;
     });
+  const workflowBootstrap = Promise.resolve(workflowController.resume())
+    .catch((error) => {
+      workflowBootstrapError = safeRouteError(error, "workflow_route_failed");
+    })
+    .finally(syncWorkflowLease);
 
   function currentCcRunning() {
-    return activeLease === "cc" || batchController.getState().running || persistedCcRunning;
+    return activeLease === "cc" || batchController.getState().running || startupCcGuardPending;
   }
 
   function currentWorkflowRunning() {
@@ -298,6 +308,23 @@ export function createExtensionRuntime(api, options = {}) {
 
   function syncWorkflowLease() {
     activeLease = workflowController.getState().running ? "workflow" : activeLease === "workflow" ? null : activeLease;
+  }
+
+  async function waitForBootstrap() {
+    await ccStateReady;
+    await workflowBootstrap;
+    if (workflowBootstrapError) {
+      throw new Error(workflowBootstrapError);
+    }
+  }
+
+  function consumeStartupCcGuardIfIdle({ allowPendingLease = false } = {}) {
+    if (!startupCcGuardPending || batchController.getState().running || (!allowPendingLease && activeLease === "cc")) {
+      return false;
+    }
+    startupCcGuardPending = false;
+    persistedCcRunning = false;
+    return true;
   }
 
   function validateTotpLabMessage(message) {
@@ -325,12 +352,11 @@ export function createExtensionRuntime(api, options = {}) {
 
   api.alarms?.onAlarm?.addListener?.((alarm) => {
     void workflowController.onAlarm(alarm)
-      .catch(() => {})
+      .catch((error) => {
+        workflowAlarmError = safeRouteError(error, "workflow_route_failed");
+      })
       .finally(syncWorkflowLease);
   });
-  void workflowController.resume()
-    .catch(() => {})
-    .finally(syncWorkflowLease);
 
   const listener = (message, sender, sendResponse) => {
     if (message?.type === "start_workflow" || message?.type === "cancel_workflow" || message?.type === "workflow_state") {
@@ -344,8 +370,13 @@ export function createExtensionRuntime(api, options = {}) {
           return false;
         }
         activeLease = "workflow";
-        void ccStateReady.then(async () => {
+        void waitForBootstrap().then(async () => {
+          if (workflowBootstrapError) {
+            activeLease = null;
+            return { ok: false, error: workflowBootstrapError };
+          }
           if (currentCcRunning()) {
+            consumeStartupCcGuardIfIdle();
             activeLease = null;
             return { ok: true, result: { ...workflowController.getState(), state: "FAILED", error: "another_workflow_running" } };
           }
@@ -373,7 +404,11 @@ export function createExtensionRuntime(api, options = {}) {
           sendResponse({ ok: false, error: "request_invalid" });
           return false;
         }
-        void workflowController.cancel(message.batchId)
+        void waitForBootstrap()
+          .then(() => {
+            if (workflowBootstrapError) throw new Error(workflowBootstrapError);
+            return workflowController.cancel(message.batchId);
+          })
           .then((result) => {
             syncWorkflowLease();
             sendResponse({ ok: true, result });
@@ -385,6 +420,10 @@ export function createExtensionRuntime(api, options = {}) {
       }
       if (!hasExactKeys(message, allowedWorkflowStateKeys)) {
         sendResponse({ ok: false, error: "request_invalid" });
+        return false;
+      }
+      if (workflowBootstrapError || workflowAlarmError) {
+        sendResponse({ ok: false, error: workflowBootstrapError || workflowAlarmError });
         return false;
       }
       sendResponse({ ok: true, result: workflowController.getState() });
@@ -463,21 +502,33 @@ export function createExtensionRuntime(api, options = {}) {
       sendResponse({ ok: true, result: smsLabController.getState() });
       return false;
     }
-      if (message?.type === "start") {
-      if (currentWorkflowRunning() || persistedCcRunning) {
+    if (message?.type === "start") {
+      if (currentWorkflowRunning()) {
         sendResponse({ ...batchController.getState(), lastError: "another_workflow_running" });
         return false;
       }
       activeLease = "cc";
-      void batchController.start()
+      void waitForBootstrap()
         .then(() => {
-          if (activeLease === "cc") activeLease = null;
+          if (workflowBootstrapError) throw new Error(workflowBootstrapError);
+          if (currentWorkflowRunning() || consumeStartupCcGuardIfIdle({ allowPendingLease: true })) {
+            activeLease = null;
+            sendResponse({ ...batchController.getState(), lastError: "another_workflow_running" });
+            return;
+          }
+          const runPromise = batchController.start();
+          sendResponse(batchController.getState());
+          void runPromise
+            .catch(() => {})
+            .finally(() => {
+              if (activeLease === "cc") activeLease = null;
+            });
         })
-        .catch(() => {
-          if (activeLease === "cc") activeLease = null;
+        .catch((error) => {
+          activeLease = null;
+          sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") });
         });
-      sendResponse(batchController.getState());
-      return false;
+      return true;
     }
     if (message?.type === "state") {
       sendResponse(batchController.getState());

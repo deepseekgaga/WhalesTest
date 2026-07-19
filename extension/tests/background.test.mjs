@@ -174,8 +174,10 @@ function makeWorkflowChrome({
   rejectResumeAlarm = false,
   ccBatchState = { running: ccRunning },
   tabsQuery = async () => [{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }],
+  sessionGet = async (key) => ({ [key]: undefined }),
 } = {}) {
   const alarmListeners = [];
+  const connectNativeCalls = [];
   const session = {};
   if (workflowState?.batchId && workflowState.state && workflowState.state !== "IDLE") {
     session.workflowState = {
@@ -195,11 +197,15 @@ function makeWorkflowChrome({
   }
   return {
     alarmListeners,
+    connectNativeCalls,
     session,
     runtime: {
       id: "ext",
       onMessage: { addListener(listener) { this.listener = listener; } },
-      connectNative() { throw new Error("native_host_unavailable"); },
+      connectNative() {
+        connectNativeCalls.push(Date.now());
+        throw new Error("native_host_unavailable");
+      },
     },
     tabs: {
       async query(query) { return tabsQuery(query); },
@@ -217,7 +223,7 @@ function makeWorkflowChrome({
         async get() { return { ccBatchState }; },
       },
       session: {
-        async get(key) { return { [key]: session[key] }; },
+        async get(key) { return sessionGet(key); },
         async set(values) { Object.assign(session, structuredClone(values)); },
       },
     },
@@ -535,7 +541,7 @@ test("keeps old CC batch route shape when a workflow is running", async () => {
 
   const response = await new Promise((resolve) => {
     const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
-    assert.equal(keepChannelOpen, false);
+    assert.equal(keepChannelOpen, true);
   });
 
   assert.equal(response.running, false);
@@ -555,7 +561,7 @@ test("workflow start reports another_workflow_running while an old CC batch is r
 
   const response = await new Promise((resolve) => {
     const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
-    assert.equal(keepChannelOpen, false);
+    assert.equal(keepChannelOpen, true);
   });
 
   assert.equal(response.running, false);
@@ -596,16 +602,83 @@ test("blocks workflow start when a persisted CC batch is marked running on start
     workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
   });
 
-  const response = await new Promise((resolve) => {
+  const firstResponse = await new Promise((resolve) => {
     const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
     assert.equal(keepChannelOpen, true);
   });
 
-  assert.equal(response.ok, true);
-  assert.equal(response.result.state, "FAILED");
-  assert.equal(response.result.error, "another_workflow_running");
+  assert.equal(firstResponse.ok, true);
+  assert.equal(firstResponse.result.state, "FAILED");
+  assert.equal(firstResponse.result.error, "another_workflow_running");
+
+  const secondResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+
+  assert.equal(secondResponse.ok, true);
+  assert.equal(secondResponse.result.state, "ROW_PREFLIGHT");
   assert.equal(chrome.alarmListeners.length, 1);
   assert.equal(chrome.session?.workflowState?.state ?? "IDLE", "IDLE");
+});
+
+test("waits for workflow bootstrap before old CC start can reach native host", async () => {
+  const heldSession = deferred();
+  const chrome = makeWorkflowChrome({
+    sessionGet: () => heldSession.promise,
+  });
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  const startPromise = new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+  await waitFor(() => chrome.connectNativeCalls.length === 0);
+  heldSession.resolve({ ccBatchState: { running: false } });
+
+  const response = await startPromise;
+  assert.equal(response.running, false);
+  assert.equal(response.lastError, "native_host_unavailable");
+  assert.equal(chrome.connectNativeCalls.length > 0, true);
+});
+
+test("returns a structured workflow_state error when workflow bootstrap fails", async () => {
+  const chrome = makeWorkflowChrome({
+    sessionGet: () => Promise.reject(new Error("resume denied")),
+  });
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "workflow_state" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.deepEqual(response, { ok: false, error: "workflow_route_failed" });
+});
+
+test("captures workflow alarm failures as structured workflow state errors", async () => {
+  const chrome = makeWorkflowChrome();
+  const runtime = createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  await new Promise((resolve) => {
+    chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+  });
+  runtime.workflowController.onAlarm = async () => { throw new Error("alarm denied"); };
+  await chrome.alarmListeners[0]({ name: "whalestest-workflow:workflow-batch-1" });
+
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "workflow_state" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.deepEqual(response, { ok: false, error: "workflow_route_failed" });
 });
 
 test("routes run_totp_lab through the native host and injects into the requested tab", async () => {
