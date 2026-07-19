@@ -73,7 +73,7 @@ test("rejects ambiguous Add Account text fallback", async () => {
     timeoutMs: 1,
   }, environment({
     one: { "#manager": element() },
-    many: { "button,[role='button'],a": [element({ text: "添加账号" }), element({ text: "添加账号" })] },
+    many: { "button,[role='button'],a": [element({ text: "\u6dfb\u52a0\u8d26\u53f7" }), element({ text: "\u6dfb\u52a0\u8d26\u53f7" })] },
   }));
 
   assert.equal(result.error, "element_ambiguous");
@@ -255,9 +255,9 @@ test("reports ambiguous exact selectors but ignores hidden and disabled candidat
   }));
   assert.equal(ambiguous.error, "element_ambiguous");
 
-  const visibleAdd = element({ text: "添加账号" });
-  const hiddenAdd = element({ text: "添加账号", width: 0 });
-  const disabledAdd = element({ text: "添加账号", disabled: true });
+  const visibleAdd = element({ text: "\u6dfb\u52a0\u8d26\u53f7" });
+  const hiddenAdd = element({ text: "\u6dfb\u52a0\u8d26\u53f7", width: 0 });
+  const disabledAdd = element({ text: "\u6dfb\u52a0\u8d26\u53f7", disabled: true });
   const result = await prepareMotherAccountOnPage({
     accountName,
     selectors: { ...baseSelectors, addAccount: "" },
@@ -272,4 +272,125 @@ test("reports ambiguous exact selectors but ignores hidden and disabled candidat
   assert.equal(visibleAdd.clicked, 1);
   assert.equal(hiddenAdd.clicked, 0);
   assert.equal(disabledAdd.clicked, 0);
+});
+
+test("bounded quiet returns page_not_stable and disconnects during continuous mutation", async () => {
+  let disconnected = 0;
+  class BusyMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.timer = null;
+    }
+    observe() {
+      this.timer = setInterval(() => this.callback(), 1);
+      this.timer.unref?.();
+      setTimeout(() => clearInterval(this.timer), 80).unref?.();
+    }
+    disconnect() {
+      disconnected += 1;
+      clearInterval(this.timer);
+    }
+  }
+  const env = environment({ one: { "#generate": element(), "#copy": element() } });
+  delete env.waitForQuiet;
+  env.MutationObserver = BusyMutationObserver;
+
+  const result = await Promise.race([
+    generateAuthorizationUrlOnPage({
+      selectors: { generateLinkButton: "#generate", authorizationUrl: ".url", copyUrlButton: "#copy" },
+      timeoutMs: 30,
+      quietMs: 10,
+    }, env),
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "test_hung" }), 120)),
+  ]);
+
+  assert.equal(result.error, "page_not_stable");
+  assert.ok(disconnected > 0);
+});
+
+test("bounded quiet returns workflow_cancelled when aborted while waiting", async () => {
+  const controller = new AbortController();
+  const env = environment({ one: { "#generate": element(), "#copy": element() } });
+  env.signal = controller.signal;
+  env.waitForQuiet = () => new Promise(() => {});
+  setTimeout(() => controller.abort(), 10).unref?.();
+
+  const result = await Promise.race([
+    generateAuthorizationUrlOnPage({
+      selectors: { generateLinkButton: "#generate", authorizationUrl: ".url", copyUrlButton: "#copy" },
+      timeoutMs: 100,
+      quietMs: 10,
+    }, env),
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "test_hung" }), 150)),
+  ]);
+
+  assert.equal(result.error, "workflow_cancelled");
+});
+
+test("invalid configured selectors fail closed without throwing", async () => {
+  const envWithInvalidSelector = () => ({
+    ...environment(),
+    document: {
+      ...environment().document,
+      querySelector(selector) {
+        if (selector === "[") throw new SyntaxError("invalid selector");
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === "[") throw new SyntaxError("invalid selector");
+        return [];
+      },
+    },
+  });
+
+  const actions = [
+    () => prepareMotherAccountOnPage({ accountName, selectors: { ...baseSelectors, accountManagement: "[" } }, envWithInvalidSelector()),
+    () => generateAuthorizationUrlOnPage({ selectors: { generateLinkButton: "#generate", authorizationUrl: "[", copyUrlButton: "#copy" } }, envWithInvalidSelector()),
+    () => backfillFinalUrlOnPage({
+      finalUrl: "https://final.test/home",
+      selectors: { motherFinalUrlInput: "[", motherFinalConfirmButton: "#save", motherFinalSuccess: ".saved" },
+    }, envWithInvalidSelector()),
+  ];
+
+  for (const action of actions) {
+    await assert.doesNotReject(action);
+    assert.equal((await action()).error, "selector_not_configured");
+  }
+});
+
+test("authorization URL extraction rejects credentials and unsafe URLs", async () => {
+  const result = await generateAuthorizationUrlOnPage({
+    selectors: { authorizationUrl: ".url", copyUrlButton: "#copy" },
+    timeoutMs: 1,
+  }, environment({
+    one: { "#copy": element() },
+    many: { ".url": [
+      element({ value: "https://user:pass@auth-target.local/start" }),
+      element({ href: "javascript:alert(1)" }),
+      element({ text: "/relative/path" }),
+    ] },
+  }));
+
+  assert.equal(result.error, "authorization_url_missing");
+});
+
+test("page action functions survive executeScript-style serialization", async () => {
+  const serialize = (fn) => Function(`return (${fn.toString()})`)();
+
+  assert.deepEqual(await serialize(prepareMotherAccountOnPage)({
+    accountName,
+    selectors: { generateLinkSection: "#generate-section" },
+  }, environment({ one: { "#generate-section": element() } })), { ok: true });
+
+  assert.deepEqual(await serialize(generateAuthorizationUrlOnPage)({
+    selectors: { authorizationUrl: "#auth-url", copyUrlButton: "#copy" },
+  }, environment({ one: { "#auth-url": element({ value: "https://auth-target.local/start" }), "#copy": element() } })), {
+    ok: true,
+    authorizationUrl: "https://auth-target.local/start",
+  });
+
+  assert.equal((await serialize(backfillFinalUrlOnPage)({
+    finalUrl: "https://final.test/home",
+    selectors: {},
+  }, environment())).error, "selector_not_configured");
 });
