@@ -136,6 +136,28 @@ test("uses one existing DOM URL without regenerating and then clicks COPY URL", 
   assert.equal(copy.clicked, 1);
 });
 
+test("generates when the visible URL container is an empty placeholder", async () => {
+  const generate = element();
+  const copy = element();
+  const url = element({ value: "" });
+  generate.click = () => {
+    generate.clicked += 1;
+    url.value = "https://auth-target.local/generated";
+  };
+  const env = environment({
+    one: { "#generate": generate, "#copy": copy },
+    many: { ".url": [url] },
+  });
+
+  const result = await generateAuthorizationUrlOnPage({
+    selectors: { generateLinkButton: "#generate", authorizationUrl: ".url", copyUrlButton: "#copy" },
+  }, env);
+
+  assert.deepEqual(result, { ok: true, authorizationUrl: "https://auth-target.local/generated" });
+  assert.equal(generate.clicked, 1);
+  assert.equal(copy.clicked, 1);
+});
+
 test("rejects missing and ambiguous authorization URLs", async () => {
   const missing = await generateAuthorizationUrlOnPage({
     selectors: { generateLinkButton: "#generate", authorizationUrl: ".url", copyUrlButton: "#copy" },

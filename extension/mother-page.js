@@ -407,25 +407,35 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
     return { element: matches[0] ?? null };
   };
   const readUrl = (node) => {
+    let invalidNonEmpty = false;
     for (const value of [node?.value, node?.href, node?.textContent]) {
       const trimmed = typeof value === "string" ? value.trim() : "";
-      if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) continue;
+      if (!trimmed) continue;
+      invalidNonEmpty = true;
+      if (/[\u0000-\u001f\u007f]/.test(trimmed)) continue;
       try {
         const parsed = new URL(trimmed);
-        if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.username === "" && parsed.password === "") return trimmed;
+        if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.username === "" && parsed.password === "") {
+          return { url: trimmed, invalidNonEmpty: false };
+        }
       } catch {
         continue;
       }
     }
-    return "";
+    return { url: "", invalidNonEmpty };
   };
   const readUniqueUrl = () => {
     const selected = allBySelector(configured.authorizationUrl);
     if (selected.error) return { error: selected.error };
     const visibleNodes = selected.nodes.filter(visible);
-    const urls = visibleNodes.map(readUrl).filter(Boolean);
+    const reads = visibleNodes.map(readUrl);
+    const urls = reads.map((read) => read.url).filter(Boolean);
     if (urls.length > 1) return { error: "authorization_url_ambiguous" };
-    return { url: urls[0] ?? "", hadCandidates: visibleNodes.length > 0 };
+    return {
+      url: urls[0] ?? "",
+      hadCandidates: visibleNodes.length > 0,
+      invalidNonEmpty: reads.some((read) => read.invalidNonEmpty),
+    };
   };
   const clickAction = async (node) => {
     if (checkAbort()) return { error: "workflow_cancelled" };
@@ -449,7 +459,7 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
 
   let current = readUniqueUrl();
   if (current.error) return { ok: false, error: current.error };
-  if (!current.url && current.hadCandidates) return { ok: false, error: "authorization_url_missing" };
+  if (!current.url && current.invalidNonEmpty) return { ok: false, error: "authorization_url_missing" };
   if (!current.url) {
     const generator = uniqueBySelector(configured.generateLinkButton);
     const target = generator.error || generator.element ? generator : uniqueByText("\u751f\u6210\u6388\u6743\u94fe\u63a5");
