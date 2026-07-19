@@ -105,6 +105,20 @@ test("waits within the deadline for a delayed Accept button", async () => {
   assert.ok(slept > 0);
 });
 
+test("stable real-timer Accept absence returns missing when timeout is shorter than quiet", async () => {
+  const env = environment({ many: { "button,[role='button']": [] } });
+  delete env.waitForQuiet;
+  delete env.sleep;
+
+  const result = await clickAcceptOnPage({
+    selectors: { acceptButton: "" },
+    timeoutMs: 20,
+    quietMs: 50,
+  }, env);
+
+  assert.equal(result.error, "accept_button_missing");
+});
+
 test("detects final page readiness by configured marker or document readiness only", async () => {
   const byMarker = await detectFinalPageOnPage({ selectors: { finalPageReady: ".home" } }, environment({ one: { ".home": element() } }));
   assert.deepEqual(byMarker, { ok: true });

@@ -24,16 +24,17 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
     const style = documentObject.defaultView?.getComputedStyle?.(node) ?? globalThis.getComputedStyle?.(node) ?? { display: "block", visibility: "visible" };
     return (!rect || (rect.width > 0 && rect.height > 0)) && style?.display !== "none" && style?.visibility !== "hidden" && style?.visibility !== "collapse";
   };
-  const boundedQuiet = async () => {
+  const boundedQuiet = async (deadlineError = "page_not_stable") => {
     if (checkAbort()) return { error: "workflow_cancelled" };
     const remaining = remainingMs();
-    if (remaining <= 0 && !env.waitForQuiet) return { error: "page_not_stable" };
+    if (remaining <= 0 && !env.waitForQuiet) return { error: deadlineError };
     return new Promise((resolve, reject) => {
       const Observer = env.MutationObserver ?? globalThis.MutationObserver;
       let quietTimer;
       let deadlineTimer;
       let observer;
       let settled = false;
+      let sawMutation = false;
       const done = (value) => {
         if (settled) return;
         settled = true;
@@ -45,7 +46,7 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
       };
       const onAbort = () => done({ error: "workflow_cancelled" });
       signal?.addEventListener?.("abort", onAbort, { once: true });
-      deadlineTimer = setTimeout(() => done({ error: "page_not_stable" }), Math.max(1, remaining));
+      deadlineTimer = setTimeout(() => done({ error: sawMutation ? "page_not_stable" : deadlineError }), Math.max(1, remaining));
       try {
         if (env.waitForQuiet) {
           Promise.resolve(env.waitForQuiet(quietMs, signal)).then(() => done({ ok: true }), reject);
@@ -56,6 +57,7 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
           return;
         }
         observer = new Observer(() => {
+          sawMutation = true;
           clearTimeout(quietTimer);
           quietTimer = setTimeout(() => done({ ok: true }), quietMs);
         });
@@ -142,7 +144,7 @@ export async function clickAcceptOnPage({ runId, requireExistingToken = false, s
       return { ok: true };
     }
     if (remainingMs() <= 0) break;
-    const quiet = await boundedQuiet();
+    const quiet = await boundedQuiet("accept_button_missing");
     if (quiet.error) return { ok: false, error: quiet.error };
     const slept = await guardedSleep(50);
     if (slept.error === "workflow_cancelled") return { ok: false, error: slept.error };
