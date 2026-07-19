@@ -5,29 +5,29 @@ const FINAL_MOTHER_PLACEHOLDERS = Object.freeze({
 });
 
 export const WORKFLOW_SELECTORS = Object.freeze({
-  accountManagement: "[data-testid='account-management']",
-  addAccount: "[data-testid='add-account']",
-  accountDialog: "[role='dialog']",
-  accountNameInput: "[name='accountName']",
-  platformControl: "[name='platform']",
-  platformOptions: "[role='option']",
-  groupContainer: "[data-testid='group-container']",
-  nextButton: "[data-testid='next-button']",
-  generateLinkSection: "[data-testid='generate-link-section']",
-  generateLinkButton: "[data-testid='generate-link-button']",
-  authorizationUrl: "[data-testid='authorization-url']",
-  copyUrlButton: "[data-testid='copy-url-button']",
+  accountManagement: "",
+  addAccount: "",
+  accountDialog: "",
+  accountNameInput: "",
+  platformControl: "",
+  platformOptions: "",
+  groupContainer: "",
+  nextButton: "",
+  generateLinkSection: "",
+  generateLinkButton: "",
+  authorizationUrl: "",
+  copyUrlButton: "",
   loginUsername: "#username",
   loginPassword: "#password",
-  loginSubmitButton: "[type='submit']",
-  loginError: "[role='alert']",
+  loginSubmitButton: "",
+  loginError: "",
   totpStage: "input[autocomplete='one-time-code'][name='code']",
-  acceptButton: "[data-testid='accept-button']",
-  finalPageReady: "[data-testid='final-page-ready']",
+  acceptButton: "",
+  finalPageReady: "",
   ...FINAL_MOTHER_PLACEHOLDERS,
 });
 
-export function requireWorkflowSelectors(selectors) {
+export function requireWorkflowSelectors(selectors = WORKFLOW_SELECTORS) {
   const configured = { ...WORKFLOW_SELECTORS, ...selectors };
   for (const [key, placeholder] of Object.entries(FINAL_MOTHER_PLACEHOLDERS)) {
     const value = configured[key];

@@ -9,6 +9,27 @@ const configuredFinalSelectors = Object.freeze({
 });
 
 test("workflow selector defaults pin login and fail-closed final mother selectors", () => {
+  for (const key of [
+    "accountManagement",
+    "addAccount",
+    "accountDialog",
+    "accountNameInput",
+    "platformControl",
+    "platformOptions",
+    "groupContainer",
+    "nextButton",
+    "generateLinkSection",
+    "generateLinkButton",
+    "authorizationUrl",
+    "copyUrlButton",
+    "loginSubmitButton",
+    "loginError",
+    "acceptButton",
+    "finalPageReady",
+  ]) {
+    assert.equal(WORKFLOW_SELECTORS[key], "");
+  }
+
   assert.equal(WORKFLOW_SELECTORS.loginUsername, "#username");
   assert.equal(WORKFLOW_SELECTORS.loginPassword, "#password");
   assert.equal(WORKFLOW_SELECTORS.totpStage, "input[autocomplete='one-time-code'][name='code']");
@@ -53,8 +74,26 @@ test("requireWorkflowSelectors returns a frozen copy without mutating defaults",
   );
   assert.ok(Object.isFrozen(configured));
   assert.notEqual(configured, candidate);
-  assert.equal(WORKFLOW_SELECTORS.accountNameInput, "[name='accountName']");
+  assert.equal(WORKFLOW_SELECTORS.accountNameInput, "");
 
   candidate.accountNameInput = "#changed";
   assert.equal(configured.accountNameInput, "#account-name");
+});
+
+test("requireWorkflowSelectors allows semantic fallbacks when only final selectors are configured", () => {
+  const configured = requireWorkflowSelectors(configuredFinalSelectors);
+
+  assert.equal(configured.accountManagement, "");
+  assert.equal(configured.addAccount, "");
+  assert.equal(configured.accountNameInput, "");
+  assert.equal(configured.loginUsername, "#username");
+  assert.deepEqual(
+    {
+      motherFinalUrlInput: configured.motherFinalUrlInput,
+      motherFinalConfirmButton: configured.motherFinalConfirmButton,
+      motherFinalSuccess: configured.motherFinalSuccess,
+    },
+    configuredFinalSelectors,
+  );
+  assert.ok(Object.isFrozen(configured));
 });
