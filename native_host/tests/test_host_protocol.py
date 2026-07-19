@@ -253,6 +253,14 @@ class HostProtocolTests(unittest.TestCase):
                 self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
                 self.assertNotIn(str(value), str(result))
 
+    def test_get_sms_lab_challenge_rejects_header_row_before_loading_workbook(self):
+        result = HostApplication("missing-config.json").dispatch({
+            "command": "get_sms_lab_challenge",
+            "excel_row": 1,
+        })
+
+        self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+
     def test_get_sms_lab_challenge_rejects_invalid_rows_without_echoing_sensitive_fields(self):
         sensitive_message = {
             "command": "get_sms_lab_challenge",

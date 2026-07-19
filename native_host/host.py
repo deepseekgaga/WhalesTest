@@ -64,7 +64,7 @@ class HostApplication:
         if set(message) - {"command", "excel_row", "request_id"}:
             return {"ok": False, "error": "request_invalid", "fatal": False}
         excel_row = message.get("excel_row")
-        if isinstance(excel_row, bool) or not isinstance(excel_row, int):
+        if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 2:
             return {"ok": False, "error": "request_invalid", "fatal": False}
         try:
             config = load_config(self.config_path)
