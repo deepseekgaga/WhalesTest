@@ -330,6 +330,27 @@ test("bounded quiet returns page_not_stable and disconnects during continuous mu
   assert.ok(disconnected > 0);
 });
 
+test("returns authorization_url_missing when quiet reaches its deadline without mutation", async () => {
+  const realDateNow = Date.now;
+  Date.now = () => 0;
+  try {
+    const env = environment({ one: { "#generate": element(), "#copy": element() } });
+    delete env.MutationObserver;
+    let nowCalls = 0;
+    env.now = () => [0, 0, 0, 2][Math.min(nowCalls++, 3)];
+
+    const result = await generateAuthorizationUrlOnPage({
+      selectors: { generateLinkButton: "#generate", authorizationUrl: ".url", copyUrlButton: "#copy" },
+      timeoutMs: 1,
+      quietMs: 10,
+    }, env);
+
+    assert.equal(result.error, "authorization_url_missing");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
 test("bounded quiet returns workflow_cancelled when aborted while waiting", async () => {
   const controller = new AbortController();
   const env = environment({ one: { "#generate": element(), "#copy": element() } });

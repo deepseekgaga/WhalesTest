@@ -334,13 +334,14 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
   const boundedQuiet = async () => {
     if (checkAbort()) return { error: "workflow_cancelled" };
     const remaining = remainingMs();
-    if (remaining <= 0) return { error: "page_not_stable" };
+    if (remaining <= 0) return { error: "page_not_stable", observedMutation: false };
     return new Promise((resolve, reject) => {
       const Observer = env.MutationObserver ?? globalThis.MutationObserver;
       let quietTimer;
       let deadlineTimer;
       let observer;
       let settled = false;
+      let observedMutation = false;
       const done = (value) => {
         if (settled) return;
         settled = true;
@@ -352,7 +353,7 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
       };
       const onAbort = () => done({ error: "workflow_cancelled" });
       signal?.addEventListener?.("abort", onAbort, { once: true });
-      deadlineTimer = setTimeout(() => done({ error: "page_not_stable" }), remaining);
+      deadlineTimer = setTimeout(() => done({ error: "page_not_stable", observedMutation }), remaining);
       try {
         if (env.waitForQuiet) {
           Promise.resolve(env.waitForQuiet(quietMs, signal)).then(() => done({ ok: true }), reject);
@@ -363,6 +364,7 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
           return;
         }
         observer = new Observer(() => {
+          observedMutation = true;
           clearTimeout(quietTimer);
           quietTimer = setTimeout(() => done({ ok: true }), quietMs);
         });
@@ -449,7 +451,10 @@ export async function generateAuthorizationUrlOnPage({ runId, requireExistingTok
       const current = readUniqueUrl();
       if (current.error || current.url) return current;
       const quiet = await boundedQuiet();
-      if (quiet.error) return quiet.error === "page_not_stable" ? quiet : { error: quiet.error };
+      if (quiet.error) {
+        if (quiet.error === "page_not_stable" && quiet.observedMutation === false) break;
+        return quiet.error === "page_not_stable" ? quiet : { error: quiet.error };
+      }
       const slept = await guardedSleep(50);
       if (slept.error === "workflow_cancelled") return slept;
       if (slept.error === "page_not_stable") break;
