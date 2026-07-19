@@ -22,36 +22,46 @@ const model = {
   cc: {},
 };
 
-const syncErrors = {
+const routeErrors = {
   workflow: "",
   cc: "",
 };
 
+let commandInFlight = false;
+
+function overlayCommandLock() {
+  if (!commandInFlight) return;
+  for (const button of [elements.workflowStart, elements.workflowStop, elements.ccStart]) {
+    if (button) button.disabled = true;
+  }
+}
+
 function render() {
   renderPopup(elements, model);
-  if (syncErrors.workflow) elements.workflowError.textContent = syncErrors.workflow;
-  if (syncErrors.cc) elements.ccError.textContent = syncErrors.cc;
+  overlayCommandLock();
+  if (routeErrors.workflow) elements.workflowError.textContent = routeErrors.workflow;
+  if (routeErrors.cc) elements.ccError.textContent = routeErrors.cc;
 }
 
 function applyWorkflowState(response) {
   if (response?.ok === false) {
-    syncErrors.workflow = "错误：状态读取失败";
+    routeErrors.workflow = "错误：workflow_route_failed";
     render();
     return;
   }
-  syncErrors.workflow = "";
   model.workflow = response?.result ?? response ?? {};
+  if (!commandInFlight) routeErrors.workflow = "";
   render();
 }
 
 function applyCcState(response) {
   if (response?.ok === false) {
-    syncErrors.cc = "最近错误：状态读取失败";
+    routeErrors.cc = "最近错误：cc_route_failed";
     render();
     return;
   }
-  syncErrors.cc = "";
   model.cc = response?.result ?? response ?? {};
+  if (!commandInFlight) routeErrors.cc = "";
   render();
 }
 
@@ -59,7 +69,7 @@ async function readWorkflowState() {
   try {
     applyWorkflowState(await chrome.runtime.sendMessage({ type: "workflow_state" }));
   } catch {
-    syncErrors.workflow = "错误：状态读取失败";
+    routeErrors.workflow = "错误：workflow_route_failed";
     render();
   }
 }
@@ -68,46 +78,64 @@ async function readCcState() {
   try {
     applyCcState(await chrome.runtime.sendMessage({ type: "state" }));
   } catch {
-    syncErrors.cc = "最近错误：状态读取失败";
+    routeErrors.cc = "最近错误：cc_route_failed";
+    render();
+  }
+}
+
+async function refreshState() {
+  await Promise.all([readWorkflowState(), readCcState()]);
+}
+
+async function runWorkflowCommand(message) {
+  commandInFlight = true;
+  routeErrors.workflow = "";
+  render();
+  try {
+    const response = await chrome.runtime.sendMessage(message);
+    await refreshState();
+    if (response?.ok === false) routeErrors.workflow = "错误：workflow_route_failed";
+    render();
+  } catch {
+    await refreshState();
+    routeErrors.workflow = "错误：workflow_route_failed";
+    render();
+  } finally {
+    commandInFlight = false;
+    render();
+  }
+}
+
+async function runCcCommand(message) {
+  commandInFlight = true;
+  routeErrors.cc = "";
+  render();
+  try {
+    const response = await chrome.runtime.sendMessage(message);
+    await refreshState();
+    if (response?.ok === false) routeErrors.cc = "最近错误：cc_route_failed";
+    render();
+  } catch {
+    await refreshState();
+    routeErrors.cc = "最近错误：cc_route_failed";
+    render();
+  } finally {
+    commandInFlight = false;
     render();
   }
 }
 
 elements.workflowStart?.addEventListener("click", async () => {
-  elements.workflowStart.disabled = true;
-  elements.workflowStop.disabled = true;
-  try {
-    await chrome.runtime.sendMessage({ type: "start_workflow" });
-  } catch {
-    syncErrors.workflow = "错误：状态读取失败";
-    render();
-  }
-  void readWorkflowState();
-  void readCcState();
+  await runWorkflowCommand({ type: "start_workflow" });
 });
 
 elements.workflowStop?.addEventListener("click", async () => {
-  elements.workflowStop.disabled = true;
   const batchId = typeof model.workflow?.batchId === "string" ? model.workflow.batchId : undefined;
-  try {
-    await chrome.runtime.sendMessage(batchId ? { type: "cancel_workflow", batchId } : { type: "cancel_workflow" });
-  } catch {
-    syncErrors.workflow = "错误：状态读取失败";
-    render();
-  }
-  void readWorkflowState();
+  await runWorkflowCommand(batchId ? { type: "cancel_workflow", batchId } : { type: "cancel_workflow" });
 });
 
 elements.ccStart?.addEventListener("click", async () => {
-  elements.ccStart.disabled = true;
-  elements.ccStatus.textContent = "状态：启动中";
-  try {
-    await chrome.runtime.sendMessage({ type: "start" });
-  } catch {
-    syncErrors.cc = "最近错误：状态读取失败";
-    render();
-  }
-  void readCcState();
+  await runCcCommand({ type: "start" });
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -115,4 +143,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.ccBatchState) applyCcState(changes.ccBatchState.newValue);
 });
 
-await Promise.all([readWorkflowState(), readCcState()]);
+await refreshState();

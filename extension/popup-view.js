@@ -1,24 +1,48 @@
-const WORKFLOW_TERMINAL_LABELS = {
-  COMPLETED: "已完成",
-  FAILED: "失败",
-  CANCELLED: "已取消",
-};
+const WORKFLOW_STATES = new Set([
+  "IDLE",
+  "ROW_PREFLIGHT",
+  "MOTHER_ACCOUNT",
+  "AUTH_LINK",
+  "OPEN_INCOGNITO",
+  "LOGIN",
+  "LOGIN_WAIT",
+  "TOTP",
+  "SMS",
+  "ACCEPT",
+  "FINAL_URL",
+  "MOTHER_BACKFILL",
+  "COMMIT",
+  "CLEANUP",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+]);
 
-const WORKFLOW_STATE_LABELS = {
-  IDLE: "待机",
-  ROW_PREFLIGHT: "准备中",
-  LOGIN: "登录中",
-  LOGIN_WAIT: "等待验证",
-  MOTHER_ACCOUNT: "填写母页",
-  AUTH_LINK: "生成授权链接",
-  OPEN_INCOGNITO: "打开无痕窗口",
-  FINAL_URL: "回填最终链接",
-  COMMIT: "提交结果",
-  CLEANUP: "清理中",
-  FAILED: "失败",
-  CANCELLED: "已取消",
-  COMPLETED: "已完成",
-};
+const WORKFLOW_TERMINAL_LABELS = new Map([
+  ["COMPLETED", "已完成"],
+  ["FAILED", "失败"],
+  ["CANCELLED", "已取消"],
+]);
+
+const WORKFLOW_STATE_LABELS = new Map([
+  ["IDLE", "待机"],
+  ["ROW_PREFLIGHT", "准备中"],
+  ["MOTHER_ACCOUNT", "填写母页"],
+  ["AUTH_LINK", "生成授权链接"],
+  ["OPEN_INCOGNITO", "打开无痕窗口"],
+  ["LOGIN", "登录中"],
+  ["LOGIN_WAIT", "等待验证"],
+  ["TOTP", "检测验证码"],
+  ["SMS", "提交短信"],
+  ["ACCEPT", "确认接受"],
+  ["FINAL_URL", "回填最终链接"],
+  ["MOTHER_BACKFILL", "回填母页"],
+  ["COMMIT", "提交结果"],
+  ["CLEANUP", "清理中"],
+  ["FAILED", "失败"],
+  ["CANCELLED", "已取消"],
+  ["COMPLETED", "已完成"],
+]);
 
 function text(element, value) {
   if (element) element.textContent = value;
@@ -33,9 +57,10 @@ function asNumber(value) {
 }
 
 function normalizeWorkflow(workflow = {}) {
+  const state = typeof workflow.state === "string" && WORKFLOW_STATES.has(workflow.state) ? workflow.state : "IDLE";
   return {
     running: Boolean(workflow.running),
-    state: typeof workflow.state === "string" && workflow.state.length > 0 ? workflow.state : "IDLE",
+    state,
     sequence: asNumber(workflow.sequence),
     excelRow: asNumber(workflow.excelRow),
     error: typeof workflow.error === "string" ? workflow.error : "",
@@ -55,8 +80,8 @@ function normalizeCc(cc = {}) {
 }
 
 function workflowStatusText(workflow) {
-  if (workflow.state in WORKFLOW_TERMINAL_LABELS) {
-    return `状态：${workflow.state}（${WORKFLOW_TERMINAL_LABELS[workflow.state]}）`;
+  if (WORKFLOW_TERMINAL_LABELS.has(workflow.state)) {
+    return `状态：${workflow.state}（${WORKFLOW_TERMINAL_LABELS.get(workflow.state)}）`;
   }
   return workflow.running ? "状态：运行中" : `状态：${WORKFLOW_STATE_LABELS[workflow.state] ?? "待机"}`;
 }
