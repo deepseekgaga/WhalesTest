@@ -55,13 +55,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 `native_host/config.json` 当前包含以下本地配置：
 
 - `input_excel`：输入 Excel。
-- `url_column`：旧 CC 批处理的 URL 列名。
-- `txt_directory` / `download_directory`：旧 CC 批处理输出目录。
-- `output_excel`：旧 CC 批处理输出工作簿。
+- `url_column`：CC 阶段的 URL 列名。
+- `txt_directory` / `download_directory`：CC 阶段输出目录。
+- `output_excel`：CC 阶段输出工作簿。
 - `workflow_input_excel`：授权 MFA 阶段使用的工作簿；缺省时读取 `output_excel`，即第一阶段生成的工作簿。
 - `download_timeout_seconds`：下载等待超时。
-- `field_mappings`：旧 CC 批处理字段映射。
-- `field_continuation_lines`：旧 CC 批处理续行规则。
+- `field_mappings`：CC 阶段字段映射。
+- `field_continuation_lines`：CC 阶段续行规则。
 - `totp_lab_url`：固定为 `http://totp-lab.local/`。
 - `totp_lab_test_hook`：当前仍是 `__FILL_TOTP_TEST_HOOK__` 占位符，真实联调前必须替换。
 
