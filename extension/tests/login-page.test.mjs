@@ -12,6 +12,21 @@ const loginSelectors = {
   totpStage: "#totp-stage",
 };
 
+function hiddenElement(kind, options = {}) {
+  const node = element(options);
+  if (kind === "property") {
+    node.hidden = true;
+    return node;
+  }
+  const originalGetAttribute = node.getAttribute.bind(node);
+  node.getAttribute = (name) => {
+    if (kind === "attribute" && name === "hidden") return "";
+    if (kind === "aria" && name === "aria-hidden") return "true";
+    return originalGetAttribute(name);
+  };
+  return node;
+}
+
 test("fills exact username and password fields and clicks one configured submit", async () => {
   const username = element();
   const password = element();
@@ -93,12 +108,64 @@ test("uses a unique visible enabled submit fallback and rejects ambiguity", asyn
   assert.equal(ambiguous.error, "element_ambiguous");
 });
 
+test("submit fallback ignores hidden and aria-hidden submit buttons", async () => {
+  for (const [kind, hiddenSubmit] of [
+    ["hidden property", hiddenElement("property")],
+    ["hidden attribute", hiddenElement("attribute")],
+    ["aria hidden", hiddenElement("aria")],
+  ]) {
+    const visibleSubmit = element({ text: "Login" });
+    const result = await submitLoginOnPage({
+      username: "alice",
+      password: "secret",
+      selectors: { loginUsername: "#u", loginPassword: "#p", loginSubmitButton: "" },
+    }, environment({
+      one: { "#u": element(), "#p": element() },
+      many: { "button[type='submit']": [hiddenSubmit, visibleSubmit] },
+    }));
+
+    assert.deepEqual(result, { ok: true }, kind);
+    assert.equal(hiddenSubmit.clicked, 0, kind);
+    assert.equal(visibleSubmit.clicked, 1, kind);
+
+    const missing = await submitLoginOnPage({
+      username: "alice",
+      password: "secret",
+      selectors: { loginUsername: "#u", loginPassword: "#p", loginSubmitButton: "" },
+      timeoutMs: 1,
+    }, environment({
+      one: { "#u": element(), "#p": element() },
+      many: { "button[type='submit']": [hiddenElement(kind === "hidden property" ? "property" : kind === "hidden attribute" ? "attribute" : "aria")] },
+    }));
+    assert.equal(missing.error, "element_missing", kind);
+  }
+});
+
 test("detects login rejection before TOTP when both markers are visible", async () => {
   const result = await detectTotpStageOnPage({
     selectors: { loginError: ".error", totpStage: "#totp" },
   }, environment({ one: { ".error": element(), "#totp": element() } }));
 
   assert.equal(result.error, "login_rejected");
+});
+
+test("TOTP detection ignores hidden and aria-hidden markers while preserving login error priority", async () => {
+  for (const [kind, hiddenTotp] of [
+    ["hidden property", hiddenElement("property")],
+    ["hidden attribute", hiddenElement("attribute")],
+    ["aria hidden", hiddenElement("aria")],
+  ]) {
+    const missing = await detectTotpStageOnPage({
+      selectors: { loginError: ".error", totpStage: "#totp" },
+      timeoutMs: 1,
+    }, environment({ one: { "#totp": hiddenTotp } }));
+    assert.equal(missing.error, "totp_stage_not_reached", kind);
+
+    const rejected = await detectTotpStageOnPage({
+      selectors: { loginError: ".error", totpStage: "#totp" },
+    }, environment({ one: { ".error": element(), "#totp": hiddenElement(kind === "hidden property" ? "property" : kind === "hidden attribute" ? "attribute" : "aria") } }));
+    assert.equal(rejected.error, "login_rejected", kind);
+  }
 });
 
 test("detects a unique TOTP stage and reports timeout when it never appears", async () => {

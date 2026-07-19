@@ -5,6 +5,21 @@ import { clickAcceptOnPage, detectFinalPageOnPage } from "../final-page.js";
 
 const registryKey = "__whalestestWorkflowRunControllers__";
 
+function hiddenElement(kind, options = {}) {
+  const node = element(options);
+  if (kind === "property") {
+    node.hidden = true;
+    return node;
+  }
+  const originalGetAttribute = node.getAttribute.bind(node);
+  node.getAttribute = (name) => {
+    if (kind === "attribute" && name === "hidden") return "";
+    if (kind === "aria" && name === "aria-hidden") return "true";
+    return originalGetAttribute(name);
+  };
+  return node;
+}
+
 test("clicks one configured accept button", async () => {
   const accept = element({ text: "Accept" });
   const result = await clickAcceptOnPage({ selectors: { acceptButton: "#accept" } }, environment({ one: { "#accept": accept } }));
@@ -30,6 +45,29 @@ test("uses only a unique visible enabled Accept or Chinese accept text fallback"
     selectors: { acceptButton: "" },
   }, environment({ many: { "button,[role='button']": [element({ text: "Other" }), chinese] } })), { ok: true });
   assert.equal(chinese.clicked, 1);
+});
+
+test("Accept fallback ignores hidden and aria-hidden matching buttons", async () => {
+  for (const [kind, hiddenAccept] of [
+    ["hidden property", hiddenElement("property", { text: "Accept" })],
+    ["hidden attribute", hiddenElement("attribute", { text: "Accept" })],
+    ["aria hidden", hiddenElement("aria", { text: "Accept" })],
+  ]) {
+    const visibleAccept = element({ text: "Accept" });
+    const result = await clickAcceptOnPage({
+      selectors: { acceptButton: "" },
+    }, environment({ many: { "button,[role='button']": [hiddenAccept, visibleAccept] } }));
+
+    assert.deepEqual(result, { ok: true }, kind);
+    assert.equal(hiddenAccept.clicked, 0, kind);
+    assert.equal(visibleAccept.clicked, 1, kind);
+
+    const missing = await clickAcceptOnPage({
+      selectors: { acceptButton: "" },
+      timeoutMs: 1,
+    }, environment({ many: { "button,[role='button']": [hiddenElement(kind === "hidden property" ? "property" : kind === "hidden attribute" ? "attribute" : "aria", { text: "Accept" })] } }));
+    assert.equal(missing.error, "accept_button_missing", kind);
+  }
 });
 
 test("rejects ambiguous or missing Accept buttons", async () => {
@@ -61,6 +99,21 @@ test("requires a unique configured final marker", async () => {
     timeoutMs: 1,
   }, environment({ many: { ".home": [element(), element()] } }));
   assert.equal(ambiguous.error, "element_ambiguous");
+});
+
+test("final marker ignores hidden and aria-hidden elements", async () => {
+  for (const [kind, hiddenMarker] of [
+    ["hidden property", hiddenElement("property")],
+    ["hidden attribute", hiddenElement("attribute")],
+    ["aria hidden", hiddenElement("aria")],
+  ]) {
+    const result = await detectFinalPageOnPage({
+      selectors: { finalPageReady: ".home" },
+      timeoutMs: 1,
+    }, environment({ one: { ".home": hiddenMarker } }));
+
+    assert.equal(result.error, "page_not_stable", kind);
+  }
 });
 
 test("waits for document readiness when no final marker is configured", async () => {

@@ -24,6 +24,7 @@ export async function submitLoginOnPage({ runId, requireExistingToken = false, u
   const styleFor = (node) => documentObject.defaultView?.getComputedStyle?.(node) ?? globalThis.getComputedStyle?.(node) ?? { display: "block", visibility: "visible" };
   const visible = (node) => {
     if (!node || node.disabled || node.getAttribute?.("aria-disabled") === "true") return false;
+    if (node.hidden === true || node.getAttribute?.("hidden") !== null || node.getAttribute?.("aria-hidden") === "true") return false;
     const rect = node.getBoundingClientRect?.();
     const style = styleFor(node);
     return (!rect || (rect.width > 0 && rect.height > 0)) && style?.display !== "none" && style?.visibility !== "hidden" && style?.visibility !== "collapse";
@@ -203,6 +204,7 @@ export async function detectTotpStageOnPage({ runId, requireExistingToken = fals
   const checkAbort = () => signal?.aborted;
   const visible = (node) => {
     if (!node || node.disabled || node.getAttribute?.("aria-disabled") === "true") return false;
+    if (node.hidden === true || node.getAttribute?.("hidden") !== null || node.getAttribute?.("aria-hidden") === "true") return false;
     const rect = node.getBoundingClientRect?.();
     const style = documentObject.defaultView?.getComputedStyle?.(node) ?? globalThis.getComputedStyle?.(node) ?? { display: "block", visibility: "visible" };
     return (!rect || (rect.width > 0 && rect.height > 0)) && style?.display !== "none" && style?.visibility !== "hidden" && style?.visibility !== "collapse";
