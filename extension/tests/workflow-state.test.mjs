@@ -4,8 +4,10 @@ import {
   TERMINAL_STAGES,
   createWorkflowState,
   formatAccountName,
+  isRetryableWorkflowError,
   nextRowState,
   publicWorkflowState,
+  safeWorkflowError,
 } from "../workflow-state.js";
 
 test("createWorkflowState initializes each batch at the first row preflight state", () => {
@@ -156,4 +158,35 @@ test("publicWorkflowState defaults optional public fields without changing its s
     error: "",
     updatedAt: null,
   });
+});
+
+test("isRetryableWorkflowError only accepts the bounded retryable workflow codes", () => {
+  for (const code of [
+    "page_not_stable",
+    "element_not_found",
+    "native_host_timeout",
+    "native_host_unavailable",
+    "tab_load_timeout",
+    "page_action_failed",
+  ]) {
+    assert.equal(isRetryableWorkflowError(code), true, code);
+  }
+
+  for (const code of [
+    "element_ambiguous",
+    "workflow_failed",
+    "workflow_cancelled",
+    "",
+    null,
+    undefined,
+  ]) {
+    assert.equal(isRetryableWorkflowError(code), false, String(code));
+  }
+});
+
+test("safeWorkflowError keeps only allowlisted workflow codes and hides raw secret fragments", () => {
+  assert.equal(safeWorkflowError(new Error("page_not_stable: retry later"), "workflow_failed"), "page_not_stable");
+  assert.equal(safeWorkflowError(new Error("element_not_found\nsecret=value"), "workflow_failed"), "element_not_found");
+  assert.equal(safeWorkflowError(new Error("secret=value"), "workflow_failed"), "workflow_failed");
+  assert.equal(safeWorkflowError(new Error("unknown_code: secret=value"), "workflow_failed"), "workflow_failed");
 });

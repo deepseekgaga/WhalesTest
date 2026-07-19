@@ -3,7 +3,15 @@ import { detectTotpStageOnPage, submitLoginOnPage } from "./login-page.js";
 import { backfillFinalUrlOnPage, generateAuthorizationUrlOnPage, prepareMotherAccountOnPage } from "./mother-page.js";
 import { cancelWorkflowOnPage, registerWorkflowOnPage } from "./workflow-page-context.js";
 import { requireWorkflowSelectors, WORKFLOW_SELECTORS } from "./workflow-selectors.js";
-import { TERMINAL_STAGES, createWorkflowState, formatAccountName, nextRowState, publicWorkflowState } from "./workflow-state.js";
+import {
+  TERMINAL_STAGES,
+  createWorkflowState,
+  formatAccountName,
+  isRetryableWorkflowError,
+  nextRowState,
+  publicWorkflowState,
+  safeWorkflowError,
+} from "./workflow-state.js";
 import { makeHandoffUrl, validateAuthorizationUrl, validateFinalUrl } from "./workflow-urls.js";
 
 export const STATE_KEY = "workflowState";
@@ -13,71 +21,9 @@ export const DEFAULT_TARGET_ORIGIN = "http://auth-target.local";
 
 const HOST_NAME = "com.whalestest.cc_batch";
 const NATIVE_TIMEOUT_MS = 15_000;
-const allowedErrors = new Set([
-  "accept_button_missing",
-  "another_workflow_running",
-  "authorization_origin_mismatch",
-  "authorization_url_ambiguous",
-  "authorization_url_invalid",
-  "authorization_url_missing",
-  "code_ambiguous",
-  "code_invalid",
-  "code_not_present",
-  "credentials_invalid",
-  "cleanup_failed",
-  "download_interrupted",
-  "download_item_missing",
-  "download_timeout",
-  "element_ambiguous",
-  "element_missing",
-  "excel_exhausted",
-  "final_url_invalid",
-  "final_page_not_ready",
-  "group_options_missing",
-  "helper_page_not_stable",
-  "helper_tab_closed",
-  "incognito_access_required",
-  "incognito_window_ambiguous",
-  "login_input_rejected",
-  "login_failed",
-  "login_rejected",
-  "mother_backfill_failed",
-  "mother_tab_incognito",
-  "mother_tab_missing",
-  "mother_url_invalid",
-  "native_host_unavailable",
-  "otp_page_action_failed",
-  "otp_code_invalid",
-  "otp_input_not_found",
-  "otp_submit_disabled",
-  "otp_submit_failed",
-  "otp_submit_not_found",
-  "otp_submit_unavailable",
-  "page_action_failed",
-  "page_not_stable",
-  "platform_option_missing",
-  "request_invalid",
-  "selector_not_configured",
-  "sms_lab_challenge_failed",
-  "sms_lab_failed",
-  "sms_page_action_failed",
-  "target_host_permission_required",
-  "totp_lab_challenge_failed",
-  "totp_lab_failed",
-  "totp_stage_not_reached",
-  "workflow_cancelled",
-  "workflow_failed",
-  "workflow_page_context_reset",
-  "workflow_running",
-]);
 
 function makeRequestId(now) {
   return `${now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function safeError(error, fallback = "workflow_failed") {
-  const message = error instanceof Error ? error.message : "";
-  return allowedErrors.has(message) ? message : fallback;
 }
 
 function clonePublicFailure(error) {
@@ -141,7 +87,7 @@ export function createNativeRequest(api, options = {}) {
         finish(reject, new Error("native_host_unavailable"));
       };
 
-      timer = setTimeout(() => finish(reject, new Error("native_host_unavailable")), timeoutMs);
+      timer = setTimeout(() => finish(reject, new Error("native_host_timeout")), timeoutMs);
       port?.onMessage?.addListener?.(onMessage);
       port?.onDisconnect?.addListener?.(onDisconnect);
       try {
@@ -280,7 +226,6 @@ export function createWorkflowController(api, options = {}) {
       clickAccept: ({ tabId, ...args }) => executePageAction(tabId, clickAcceptOnPage, args),
       detectFinal: ({ tabId, ...args }) => executePageAction(tabId, detectFinalPageOnPage, args),
       backfillMother: ({ tabId, ...args }) => executePageAction(tabId, backfillFinalUrlOnPage, args),
-      cancelPage: ({ tabId, ...args }) => executePageAction(tabId, cancelWorkflowOnPage, args),
     };
   }
 
@@ -302,6 +247,35 @@ export function createWorkflowController(api, options = {}) {
       if (/No window with id|Window not found|Invalid window id/i.test(message)) return;
       throw new Error("cleanup_failed");
     }
+  }
+
+  async function cancelOwnedPageContexts(workflowState = state) {
+    const tabIds = [...new Set(
+      [workflowState?.motherTabId, workflowState?.incognitoTabId].filter((tabId) => Number.isInteger(tabId)),
+    )];
+    await Promise.allSettled(
+      tabIds.map((tabId) => Promise.resolve().then(() => api.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: cancelWorkflowOnPage,
+        args: [{ runId: workflowState?.batchId }],
+      }))),
+    );
+  }
+
+  async function settleWorkflowControllers(workflowState = state) {
+    await Promise.allSettled([
+      Promise.resolve().then(() => totpLabController?.cancel?.(workflowState?.batchId)),
+      Promise.resolve().then(() => smsLabController?.cancel?.(workflowState?.batchId)),
+      cancelOwnedPageContexts(workflowState),
+    ]);
+  }
+
+  async function terminalizeWorkflow(stage, error, activeSnapshot, workflowState = state) {
+    await settleWorkflowControllers(workflowState);
+    if (!await persist({ ...workflowState, stage, error }, activeSnapshot)) return false;
+    await api.alarms?.clear?.(`${ALARM_PREFIX}${workflowState.batchId}`);
+    return true;
   }
 
   async function openOwnedIncognito(authorizationUrl, activeSnapshot) {
@@ -353,7 +327,7 @@ export function createWorkflowController(api, options = {}) {
         if (currentOrigin !== targetOrigin) throw new Error("authorization_origin_mismatch");
       }
     } catch (error) {
-      await persist({ ...state, stage: "FAILED", error: safeError(error) }, activeSnapshot);
+      await persist({ ...state, stage: "FAILED", error: safeWorkflowError(error) }, activeSnapshot);
       throw error;
     }
 
@@ -428,6 +402,7 @@ export function createWorkflowController(api, options = {}) {
         if (!isCurrent(activeSnapshot)) return;
         if (response?.ok !== true) {
           if (response?.error === "excel_exhausted") {
+            await cancelOwnedPageContexts(state);
             await persist({ ...state, stage: "COMPLETED", error: "" }, activeSnapshot);
             return;
           }
@@ -598,7 +573,18 @@ export function createWorkflowController(api, options = {}) {
       await runCurrentStage(activeSnapshot);
     } catch (error) {
       if (!isCurrent(activeSnapshot)) return;
-      await persist({ ...state, stage: "FAILED", error: safeError(error) }, activeSnapshot);
+      const code = safeWorkflowError(error);
+      if (isRetryableWorkflowError(code) && (state.attempt ?? 0) < 1) {
+        if (!await persist({ ...state, attempt: (state.attempt ?? 0) + 1, error: code }, activeSnapshot)) return;
+        const retrySnapshot = snapshot();
+        try {
+          await scheduleCurrent(500, retrySnapshot);
+        } catch {
+          if (isCurrent(retrySnapshot)) await terminalizeWorkflow("FAILED", "workflow_failed", retrySnapshot);
+        }
+        return;
+      }
+      await terminalizeWorkflow("FAILED", code, activeSnapshot);
     } finally {
       processing = false;
     }
@@ -620,10 +606,7 @@ export function createWorkflowController(api, options = {}) {
     await loadState();
     if (!state || TERMINAL_STAGES.has(state.stage)) return publicWorkflowState(state);
     if (batchId && batchId !== state.batchId) return publicWorkflowState(state);
-    await persist({ ...state, stage: "CANCELLED", error: "" });
-    await api.alarms?.clear?.(`${ALARM_PREFIX}${state.batchId}`);
-    await totpLabController?.cancel?.();
-    await smsLabController?.cancel?.();
+    await terminalizeWorkflow("CANCELLED", "workflow_cancelled", snapshot(), state);
     return publicWorkflowState(state);
   }
 

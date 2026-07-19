@@ -397,8 +397,9 @@ test("does not let a cancelled in-flight stage transition or schedule after it r
   await runningAlarm;
   assert.equal(controller.getState().state, "CANCELLED");
   assert.equal(chrome.session.workflowState.stage, "CANCELLED");
+  assert.equal(controller.getState().error, "workflow_cancelled");
   assert.equal(chrome.alarmsByName.size, 0);
-  assert.equal(chrome.session.workflowState.error, "");
+  assert.equal(chrome.session.workflowState.error, "workflow_cancelled");
 });
 
 test("does not let an old rejected alarm poison a new batch after cancellation", async () => {
@@ -781,8 +782,12 @@ test("does not transition when cancelled after a held TOTP lab promise resolves"
 
   assert.equal(workflowStage(controller.getState()), "CANCELLED");
   assert.equal(chrome.session.workflowState.stage, "CANCELLED");
+  assert.equal(controller.getState().error, "workflow_cancelled");
+  assert.equal(chrome.session.workflowState.error, "workflow_cancelled");
   assert.equal(harness.totpCancelled, 1);
   assert.equal(harness.smsCancelled, 1);
+  assert.equal(chrome.calls.some(([name, func]) => name === "executeScript" && func === "cancelWorkflowOnPage"), true);
+  assert.equal(chrome.calls.some(([name]) => name === "windows.remove"), false);
   assert.equal(chrome.alarmsByName.size, 0);
 });
 
@@ -802,6 +807,115 @@ test("invalid target origin configuration fails closed without throwing from the
   assert.equal(result.state, "FAILED");
   assert.equal(result.error, "authorization_origin_mismatch");
   assert.equal(chrome.calls.some(([name]) => name === "session.set"), false);
+});
+
+test("retries page_not_stable once before continuing and keeps sequence and row stable", async () => {
+  const chrome = makeChrome();
+  let prepareCalls = 0;
+  const controller = createWorkflowController(chrome, minimalOptions({
+    requestNative: async () => ({ ok: true, username: "alice", password: "secret" }),
+    pageActions: {
+      prepareMother: async () => {
+        prepareCalls += 1;
+        if (prepareCalls === 1) throw new Error("page_not_stable: secret=1");
+        return { ok: true };
+      },
+      generateAuthorization: async () => ({ ok: true, authorizationUrl: "http://auth-target.local/start?id=7" }),
+    },
+  }));
+
+  await controller.start();
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+
+  assert.equal(workflowStage(controller.getState()), "MOTHER_ACCOUNT");
+  assert.equal(controller.getState().sequence, 1);
+  assert.equal(controller.getState().excelRow, 2);
+  assert.equal(chrome.session.workflowState.attempt, 1);
+  assert.equal(chrome.session.workflowState.error, "page_not_stable");
+  assert.equal([...chrome.alarmsByName.values()][0].when, 1_500);
+
+  await fireNextAlarm(controller, chrome, { value: 1_500 });
+
+  assert.equal(workflowStage(controller.getState()), "AUTH_LINK");
+  assert.equal(controller.getState().sequence, 1);
+  assert.equal(controller.getState().excelRow, 2);
+  assert.equal(chrome.session.workflowState.attempt, 0);
+  assert.equal(chrome.session.workflowState.error, "");
+});
+
+test("fails after a second page_not_stable attempt without advancing sequence or row", async () => {
+  const chrome = makeChrome();
+  const controller = createWorkflowController(chrome, minimalOptions({
+    requestNative: async () => ({ ok: true, username: "alice", password: "secret" }),
+    pageActions: {
+      prepareMother: async () => { throw new Error("page_not_stable: secret=1"); },
+    },
+  }));
+
+  await controller.start();
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+  await fireNextAlarm(controller, chrome, { value: 1_500 });
+
+  assert.equal(workflowStage(controller.getState()), "FAILED");
+  assert.equal(controller.getState().error, "page_not_stable");
+  assert.equal(controller.getState().sequence, 1);
+  assert.equal(controller.getState().excelRow, 2);
+  assert.equal(chrome.session.workflowState.stage, "FAILED");
+  assert.equal(chrome.session.workflowState.error, "page_not_stable");
+  assert.equal(chrome.alarmsByName.size, 0);
+});
+
+test("cancels owned page contexts while keeping failed windows for diagnosis", async () => {
+  const chrome = makeChrome();
+  const heldPrepare = deferred();
+  const controller = createWorkflowController(chrome, minimalOptions({
+    requestNative: async () => ({ ok: true, username: "alice", password: "secret" }),
+    pageActions: {
+      prepareMother: async () => heldPrepare.promise,
+    },
+  }));
+
+  await controller.start();
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+  const alarm = [...chrome.alarmsByName.values()][0];
+  chrome.alarmsByName.delete(alarm.name);
+  const runningAlarm = controller.onAlarm(alarm);
+  await tick();
+
+  await controller.cancel("batch-0000");
+  heldPrepare.resolve({ ok: true });
+  await runningAlarm;
+
+  assert.equal(workflowStage(controller.getState()), "CANCELLED");
+  assert.equal(chrome.session.workflowState.stage, "CANCELLED");
+  assert.equal(controller.getState().error, "workflow_cancelled");
+  assert.equal(chrome.session.workflowState.error, "workflow_cancelled");
+  assert.equal(chrome.calls.some(([name, func]) => name === "executeScript" && func === "cancelWorkflowOnPage"), true);
+  assert.equal(chrome.calls.some(([name]) => name === "windows.remove"), false);
+  assert.equal(chrome.windowsById.has(1), true);
+  assert.equal(chrome.alarmsByName.size, 0);
+});
+
+test("cancels owned page contexts when row exhaustion completes the workflow", async () => {
+  const chrome = makeChrome();
+  let nativeCalls = 0;
+  const controller = createWorkflowController(chrome, minimalOptions({
+    requestNative: async () => {
+      nativeCalls += 1;
+      return { ok: false, error: "excel_exhausted" };
+    },
+  }));
+
+  await controller.start();
+  await fireNextAlarm(controller, chrome, { value: 1_000 });
+
+  assert.equal(nativeCalls, 1);
+  assert.equal(workflowStage(controller.getState()), "COMPLETED");
+  assert.equal(chrome.session.workflowState.stage, "COMPLETED");
+  assert.equal(chrome.calls.some(([name, func]) => name === "executeScript" && func === "cancelWorkflowOnPage"), true);
+  assert.equal(chrome.calls.some(([name]) => name === "windows.remove"), false);
 });
 
 function makeNativePort() {
@@ -850,7 +964,7 @@ test("default native request resolves only matching request ids and cleans up th
   assert.equal(native.listenerCount, 0);
 });
 
-test("default native request maps disconnect and timeout to native_host_unavailable", async () => {
+test("default native request maps disconnect to native_host_unavailable and timeout to native_host_timeout", async () => {
   const disconnected = makeNativePort();
   const disconnectedRequest = createNativeRequest({
     runtime: { connectNative: () => disconnected.port },
@@ -864,7 +978,7 @@ test("default native request maps disconnect and timeout to native_host_unavaila
   const timedOutRequest = createNativeRequest({
     runtime: { connectNative: () => timedOut.port },
   }, { now: () => 9, timeoutMs: 1 });
-  await assert.rejects(timedOutRequest("get_workflow_credentials", { excel_row: 2 }), /native_host_unavailable/);
+  await assert.rejects(timedOutRequest("get_workflow_credentials", { excel_row: 2 }), /native_host_timeout/);
   assert.equal(timedOut.listenerCount, 0);
 });
 
