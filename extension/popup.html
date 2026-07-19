@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CC 批量任务</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <section id="workflow-panel" aria-labelledby="workflow-title">
+        <h1 id="workflow-title">授权登录工作流</h1>
+        <div class="actions" role="group" aria-label="授权登录工作流操作">
+          <button id="workflow-start" type="button">开始执行任务</button>
+          <button id="workflow-stop" type="button">停止任务</button>
+        </div>
+        <dl class="metrics">
+          <div><dt>状态</dt><dd id="workflow-status">状态：待机</dd></div>
+          <div><dt>序号</dt><dd id="workflow-sequence">序号：0</dd></div>
+          <div><dt>Excel行</dt><dd id="workflow-excel-row">Excel行：0</dd></div>
+          <div><dt>阶段</dt><dd id="workflow-stage">阶段：IDLE</dd></div>
+        </dl>
+        <p id="workflow-error" class="error">错误：无</p>
+      </section>
+
+      <section id="cc-panel" aria-labelledby="cc-title">
+        <h1 id="cc-title">CC 下载批处理</h1>
+        <div class="actions" role="group" aria-label="CC 下载批处理操作">
+          <button id="start" type="button">开始整批任务</button>
+        </div>
+        <dl class="metrics">
+          <div><dt>状态</dt><dd id="status">状态：空闲</dd></div>
+          <div><dt>进度</dt><dd id="progress">进度：0/0</dd></div>
+          <div><dt>成功</dt><dd id="success">成功：0</dd></div>
+          <div><dt>失败</dt><dd id="failure">失败：0</dd></div>
+        </dl>
+        <p id="url" class="muted">当前网址：无</p>
+        <p id="error" class="error">最近错误：无</p>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

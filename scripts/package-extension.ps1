@@ -15,6 +15,7 @@ $requiredFiles = @(
   'popup.html',
   'popup.css',
   'popup.js',
+  'popup-view.js',
   'totp-controller.js',
   'totp-page.js',
   'totp-lab-controller.js',
