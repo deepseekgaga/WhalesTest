@@ -379,6 +379,19 @@ test("cancel while fill is pending settles cancelled promptly", async () => {
   assert.deepEqual(chrome.reloadedTabs, []);
 });
 
+test("maps target fill injection denial after closing the helper", async () => {
+  const chrome = makeChrome({ fillPromise: Promise.reject(new Error("cannot access target host")) });
+  const controller = createTotpLabController(chrome, { makeRunId: () => "run-1" });
+
+  const result = await controller.run({ motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+
+  assert.deepEqual(result, { state: "FAILED", runId: "run-1", error: "target_host_permission_required" });
+  assert.deepEqual(chrome.targetExecutions.map((entry) => entry.func.name), ["registerTotpOnPage", "fillTotpOnPage"]);
+  assert.equal(chrome.helperExecutions.length, 1);
+  assert.deepEqual(chrome.removedTabs, [30]);
+  assert.deepEqual(chrome.reloadedTabs, []);
+});
+
 test("returns request_invalid for identical mother and target tab ids without creating a helper", async () => {
   const chrome = makeChrome({
     motherTab: { id: 10, windowId: 1, index: 3, active: true, incognito: false },
