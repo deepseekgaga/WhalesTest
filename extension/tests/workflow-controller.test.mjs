@@ -25,7 +25,14 @@ function minimalOptions(overrides = {}) {
   };
 }
 
-function makeChrome({ motherUrl = "http://127.0.0.1:9527/", noActiveTab = false, rejectAlarmCreate = false, rejectTabsQuery = false, rejectTabsUpdate = false } = {}) {
+function makeChrome({
+  motherUrl = "http://127.0.0.1:9527/",
+  noActiveTab = false,
+  rejectAlarmCreate = false,
+  rejectTabsQuery = false,
+  rejectTabsUpdate = false,
+  rejectWindowRemove = false,
+} = {}) {
   const session = {};
   const alarms = new Map();
   const tabs = noActiveTab
@@ -87,7 +94,13 @@ function makeChrome({ motherUrl = "http://127.0.0.1:9527/", noActiveTab = false,
         return { ...windows.get(windowId), tabs: [{ ...tabs.get(tabId) }] };
       },
       async update(id, changes) { Object.assign(windows.get(id), changes); return { ...windows.get(id) }; },
-      async remove(id) { windows.delete(id); for (const [tabId, tab] of tabs) if (tab.windowId === id) tabs.delete(tabId); calls.push(["windows.remove", id]); },
+      async remove(id) {
+        calls.push(["windows.remove", id]);
+        if (rejectWindowRemove === true) throw new Error("remove failed secret");
+        if (rejectWindowRemove === "missing") throw new Error(`No window with id: ${id}`);
+        windows.delete(id);
+        for (const [tabId, tab] of tabs) if (tab.windowId === id) tabs.delete(tabId);
+      },
     },
     scripting: {
       async executeScript(details) { calls.push(["executeScript", details.func?.name]); return [{ result: { ok: true } }]; },
@@ -115,6 +128,81 @@ async function fireNextAlarm(controller, chrome, nowRef) {
   chrome.alarmsByName.delete(alarm.name);
   if (typeof alarm.when === "number") nowRef.value = Math.max(nowRef.value, alarm.when);
   await controller.onAlarm(alarm);
+}
+
+async function drainMicrotasks(times = 3) {
+  for (let index = 0; index < times; index += 1) await tick();
+}
+
+function workflowStage(state) {
+  return state.state ?? state.stage;
+}
+
+function makeHappyHarness({ pageOverrides = {}, totpRun, smsRun, chromeOptions = {}, nativeOverride } = {}) {
+  const chrome = makeChrome(chromeOptions);
+  const now = { value: 1_000 };
+  let credentialReads = 0;
+  let totpCancelled = 0;
+  let smsCancelled = 0;
+  const stageCalls = [];
+  const pageActions = {
+    prepareMother: async (request) => { stageCalls.push(["prepareMother", request]); return { ok: true }; },
+    generateAuthorization: async (request) => { stageCalls.push(["generateAuthorization", request]); return { ok: true, authorizationUrl: "http://auth-target.local/start?id=7" }; },
+    submitLogin: async (request) => { stageCalls.push(["submitLogin", request]); return { ok: true }; },
+    detectTotp: async (request) => { stageCalls.push(["detectTotp", request, now.value]); return { ok: true }; },
+    clickAccept: async (request) => { stageCalls.push(["clickAccept", request]); return { ok: true }; },
+    detectFinal: async (request) => { stageCalls.push(["detectFinal", request]); return { ok: true }; },
+    backfillMother: async (request) => { stageCalls.push(["backfillMother", request]); return { ok: true }; },
+    ...pageOverrides,
+  };
+  const requestNative = nativeOverride ?? (async (command, payload) => {
+    assert.equal(command, "get_workflow_credentials");
+    credentialReads += 1;
+    if (payload.excel_row === 3) return { ok: false, error: "excel_exhausted" };
+    return {
+      ok: true,
+      username: "alice",
+      password: "secret",
+      totpCode: "123456",
+      smsCode: "654321",
+      phone: "13800000000",
+    };
+  });
+  const controller = createWorkflowController(chrome, {
+    now: () => now.value,
+    makeBatchId: () => "batch-0099",
+    targetOrigin: "http://auth-target.local",
+    selectors: configuredSelectors,
+    requestNative,
+    pageActions,
+    totpLabController: {
+      run: totpRun ?? (async (request) => { stageCalls.push(["totp", request]); return { state: "SUCCEEDED" }; }),
+      cancel: async () => { totpCancelled += 1; },
+    },
+    smsLabController: {
+      run: smsRun ?? (async (request) => { stageCalls.push(["sms", request]); return { state: "SUCCEEDED" }; }),
+      cancel: async () => { smsCancelled += 1; },
+    },
+  });
+  const driveUntil = async (stage, limit = 50) => {
+    for (let guard = 0; workflowStage(controller.getState()) !== stage && guard < limit; guard += 1) {
+      if (workflowStage(controller.getState()) === "FINAL_URL") {
+        chrome.tabsById.get(chrome.session.workflowState.incognitoTabId).url = "https://final.test/home";
+      }
+      await fireNextAlarm(controller, chrome, now);
+    }
+    assert.equal(workflowStage(controller.getState()), stage);
+  };
+  return {
+    controller,
+    chrome,
+    now,
+    stageCalls,
+    driveUntil,
+    get credentialReads() { return credentialReads; },
+    get totpCancelled() { return totpCancelled; },
+    get smsCancelled() { return smsCancelled; },
+  };
 }
 
 async function reachLogin({ chrome = makeChrome(), now = { value: 1_000 }, options = {} } = {}) {
@@ -465,13 +553,13 @@ test("retains failed incognito handoff windows and ids for diagnosis without pub
   assert.equal(chrome.calls.some(([name]) => name === "windows.remove" || name === "tabs.remove"), false);
 });
 
-test("does not create a second window when repeated after LOGIN", async () => {
-  const chrome = makeChrome();
-  const controller = await reachLogin({ chrome });
+test("does not create a second window when repeated during LOGIN_WAIT", async () => {
+  const { controller, chrome, driveUntil } = makeHappyHarness();
+  await controller.start();
+  await driveUntil("LOGIN_WAIT");
   const windowCreates = chrome.calls.filter(([name]) => name === "windows.create").length;
-  await controller.onAlarm([...chrome.alarmsByName.values()][0]);
+  await fireNextAlarm(controller, chrome, { value: 31_000 });
   assert.equal(chrome.calls.filter(([name]) => name === "windows.create").length, windowCreates);
-  assert.equal(controller.getState().state, "LOGIN");
 });
 
 test("rejects stored non-marker incognito tabs at the wrong origin", async () => {
@@ -510,6 +598,192 @@ test("public state and session never include credentials or authorization URL", 
   assert.equal(Object.hasOwn(publicState, "password"), false);
   assert.equal(Object.hasOwn(publicState, "authorizationUrl"), false);
   assert.doesNotMatch(JSON.stringify(chrome.session.workflowState), /alice|secret|authorizationUrl/);
+});
+
+test("commits only after login MFA accept and mother backfill all succeed", async () => {
+  const harness = makeHappyHarness({
+    pageOverrides: {
+      detectTotp: async (request) => {
+        harness.stageCalls.push(["detectTotp", request, harness.now.value, harness.chrome.session.workflowState.loginSubmittedAt]);
+        assert.ok(harness.now.value >= harness.chrome.session.workflowState.loginSubmittedAt + 30_000);
+        return { ok: true };
+      },
+      backfillMother: async (request) => {
+        harness.stageCalls.push(["backfillMother", request]);
+        return { ok: true };
+      },
+    },
+  });
+  const { controller, chrome, now, stageCalls } = harness;
+
+  await controller.start();
+  let guard = 0;
+  while (workflowStage(controller.getState()) !== "COMPLETED" && guard++ < 40) {
+    if (workflowStage(controller.getState()) === "FINAL_URL") {
+      chrome.tabsById.get(chrome.session.workflowState.incognitoTabId).url = "https://final.test/home";
+    }
+    await fireNextAlarm(controller, chrome, now);
+  }
+
+  assert.equal(workflowStage(controller.getState()), "COMPLETED");
+  assert.equal(harness.credentialReads, 3);
+  assert.deepEqual(stageCalls.find(([name]) => name === "totp")[1], { motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+  assert.deepEqual(stageCalls.find(([name]) => name === "sms")[1], { motherTabId: 10, incognitoTabId: 20, excelRow: 2 });
+  assert.equal(stageCalls.find(([name]) => name === "backfillMother")[1].finalUrl, "https://final.test/home");
+  assert.equal(controller.getState().sequence, 2);
+  assert.equal(controller.getState().excelRow, 3);
+  assert.equal([...chrome.windowsById.values()].some((item) => item.incognito), false);
+  assert.equal([...chrome.tabsById.values()].some((item) => item.incognito), false);
+});
+
+test("does not advance when mother backfill fails and never stores credentials or final URLs", async () => {
+  const { controller, chrome, driveUntil } = makeHappyHarness({
+    pageOverrides: {
+      backfillMother: async () => ({ ok: false, error: "mother_backfill_failed" }),
+    },
+  });
+
+  await controller.start();
+  await driveUntil("FAILED");
+
+  assert.equal(controller.getState().sequence, 1);
+  assert.equal(controller.getState().excelRow, 2);
+  assert.equal(chrome.windowsById.get(2)?.incognito, true);
+  for (const [, values] of chrome.calls.filter(([name]) => name === "session.set")) {
+    assert.doesNotMatch(JSON.stringify(values), /alice|secret|123456|654321|13800000000|auth-target\.local\/start|final\.test\/home/);
+  }
+});
+
+test("waits at least 30 seconds after login before detecting TOTP", async () => {
+  const { controller, chrome, now, stageCalls, driveUntil } = makeHappyHarness();
+  await controller.start();
+  await driveUntil("LOGIN_WAIT");
+
+  const submittedAt = chrome.session.workflowState.loginSubmittedAt;
+  assert.equal(submittedAt, 1_000);
+  assert.equal(stageCalls.filter(([name]) => name === "detectTotp").length, 0);
+
+  await controller.onAlarm({ name: "whalestest-workflow:batch-0099" });
+  assert.equal(workflowStage(controller.getState()), "LOGIN_WAIT");
+  assert.equal(stageCalls.filter(([name]) => name === "detectTotp").length, 0);
+  let alarm = [...chrome.alarmsByName.values()][0];
+  assert.equal(alarm.when, submittedAt + 30_000);
+
+  now.value = submittedAt + 29_999;
+  chrome.alarmsByName.delete(alarm.name);
+  await controller.onAlarm(alarm);
+  assert.equal(workflowStage(controller.getState()), "LOGIN_WAIT");
+  assert.equal(stageCalls.filter(([name]) => name === "detectTotp").length, 0);
+  alarm = [...chrome.alarmsByName.values()][0];
+  assert.equal(alarm.when, submittedAt + 30_000);
+
+  now.value = submittedAt + 30_000;
+  chrome.alarmsByName.delete(alarm.name);
+  await controller.onAlarm(alarm);
+  assert.equal(stageCalls.filter(([name]) => name === "detectTotp").length, 1);
+  assert.equal(workflowStage(controller.getState()), "TOTP");
+});
+
+test("does not commit or close incognito when any authentication stage before COMMIT fails", async () => {
+  const cases = [
+    ["login", { pageOverrides: { submitLogin: async () => ({ ok: false, error: "login_rejected" }) } }, "login_rejected"],
+    ["totp-detect", { pageOverrides: { detectTotp: async () => ({ ok: false, error: "totp_stage_not_reached" }) } }, "totp_stage_not_reached"],
+    ["totp", { totpRun: async () => ({ state: "FAILED", error: "totp_lab_failed" }) }, "totp_lab_failed"],
+    ["sms", { smsRun: async () => ({ state: "FAILED", error: "sms_lab_failed" }) }, "sms_lab_failed"],
+    ["accept", { pageOverrides: { clickAccept: async () => ({ ok: false, error: "accept_button_missing" }) } }, "accept_button_missing"],
+    ["final", { pageOverrides: { detectFinal: async () => ({ ok: false, error: "final_page_not_ready" }) } }, "final_page_not_ready"],
+    ["final-url", {
+      pageOverrides: {
+        backfillMother: async () => { throw new Error("should_not_backfill"); },
+      },
+    }, "final_url_invalid"],
+    ["backfill", { pageOverrides: { backfillMother: async () => ({ ok: false, error: "mother_backfill_failed" }) } }, "mother_backfill_failed"],
+  ];
+
+  for (const [label, options, expectedError] of cases) {
+    const { controller, chrome, driveUntil } = makeHappyHarness(options);
+    await controller.start();
+    if (label !== "final-url") {
+      await driveUntil("FAILED");
+    } else {
+      await driveUntil("FINAL_URL");
+      chrome.tabsById.get(chrome.session.workflowState.incognitoTabId).url = "ftp://final.test/home";
+      await fireNextAlarm(controller, chrome, { value: 31_000 });
+    }
+    assert.equal(workflowStage(controller.getState()), "FAILED", label);
+    assert.equal(controller.getState().error, expectedError, label);
+    assert.equal(controller.getState().sequence, 1, label);
+    assert.equal(controller.getState().excelRow, 2, label);
+    assert.equal(chrome.windowsById.get(2)?.incognito, true, label);
+    assert.equal(chrome.calls.some(([name]) => name === "windows.remove"), false, label);
+  }
+});
+
+test("COMMIT atomically advances row and sequence exactly once into cleanup", async () => {
+  const { controller, chrome, driveUntil } = makeHappyHarness();
+  await controller.start();
+  await driveUntil("COMMIT");
+
+  await fireNextAlarm(controller, chrome, { value: 31_000 });
+
+  assert.equal(workflowStage(controller.getState()), "CLEANUP");
+  assert.equal(controller.getState().sequence, 2);
+  assert.equal(controller.getState().excelRow, 3);
+  const commitWrites = chrome.calls.filter(([, values]) => values?.workflowState?.stage === "CLEANUP");
+  assert.equal(commitWrites.length, 1);
+  assert.deepEqual(commitWrites[0][1].workflowState.sequence, 2);
+  assert.deepEqual(commitWrites[0][1].workflowState.excelRow, 3);
+  assert.deepEqual(commitWrites[0][1].workflowState.stage, "CLEANUP");
+});
+
+test("CLEANUP treats missing incognito windows as success and only fails on other cleanup errors", async () => {
+  {
+    const { controller, chrome, driveUntil } = makeHappyHarness({ chromeOptions: { rejectWindowRemove: "missing" } });
+    await controller.start();
+    await driveUntil("CLEANUP");
+    await fireNextAlarm(controller, chrome, { value: 31_000 });
+    assert.equal(workflowStage(controller.getState()), "ROW_PREFLIGHT");
+    assert.equal(chrome.session.workflowState.incognitoTabId, null);
+    assert.equal(chrome.session.workflowState.incognitoWindowId, null);
+    assert.equal(chrome.session.workflowState.loginSubmittedAt, null);
+    await fireNextAlarm(controller, chrome, { value: 31_001 });
+    assert.equal(workflowStage(controller.getState()), "COMPLETED");
+  }
+
+  {
+    const { controller, chrome, driveUntil } = makeHappyHarness({ chromeOptions: { rejectWindowRemove: true } });
+    await controller.start();
+    await driveUntil("CLEANUP");
+    await fireNextAlarm(controller, chrome, { value: 31_000 });
+    assert.equal(workflowStage(controller.getState()), "FAILED");
+    assert.equal(controller.getState().error, "cleanup_failed");
+    assert.equal(controller.getState().sequence, 2);
+    assert.equal(controller.getState().excelRow, 3);
+  }
+});
+
+test("does not transition when cancelled after a held TOTP lab promise resolves", async () => {
+  const heldTotp = deferred();
+  const harness = makeHappyHarness({
+    totpRun: async () => heldTotp.promise,
+  });
+  const { controller, chrome, driveUntil } = harness;
+  await controller.start();
+  await driveUntil("TOTP");
+  const alarm = [...chrome.alarmsByName.values()][0];
+  chrome.alarmsByName.delete(alarm.name);
+  const runningAlarm = controller.onAlarm(alarm);
+  await drainMicrotasks();
+
+  await controller.cancel("batch-0099");
+  heldTotp.resolve({ state: "SUCCEEDED" });
+  await runningAlarm;
+
+  assert.equal(workflowStage(controller.getState()), "CANCELLED");
+  assert.equal(chrome.session.workflowState.stage, "CANCELLED");
+  assert.equal(harness.totpCancelled, 1);
+  assert.equal(harness.smsCancelled, 1);
+  assert.equal(chrome.alarmsByName.size, 0);
 });
 
 test("normalizes target origin configuration before authorization validation", async () => {

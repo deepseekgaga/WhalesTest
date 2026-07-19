@@ -3,8 +3,8 @@ import { detectTotpStageOnPage, submitLoginOnPage } from "./login-page.js";
 import { backfillFinalUrlOnPage, generateAuthorizationUrlOnPage, prepareMotherAccountOnPage } from "./mother-page.js";
 import { cancelWorkflowOnPage, registerWorkflowOnPage } from "./workflow-page-context.js";
 import { requireWorkflowSelectors, WORKFLOW_SELECTORS } from "./workflow-selectors.js";
-import { TERMINAL_STAGES, createWorkflowState, formatAccountName, publicWorkflowState } from "./workflow-state.js";
-import { makeHandoffUrl, validateAuthorizationUrl } from "./workflow-urls.js";
+import { TERMINAL_STAGES, createWorkflowState, formatAccountName, nextRowState, publicWorkflowState } from "./workflow-state.js";
+import { makeHandoffUrl, validateAuthorizationUrl, validateFinalUrl } from "./workflow-urls.js";
 
 export const STATE_KEY = "workflowState";
 export const ALARM_PREFIX = "whalestest-workflow:";
@@ -24,6 +24,7 @@ const allowedErrors = new Set([
   "code_invalid",
   "code_not_present",
   "credentials_invalid",
+  "cleanup_failed",
   "download_interrupted",
   "download_item_missing",
   "download_timeout",
@@ -31,12 +32,14 @@ const allowedErrors = new Set([
   "element_missing",
   "excel_exhausted",
   "final_url_invalid",
+  "final_page_not_ready",
   "group_options_missing",
   "helper_page_not_stable",
   "helper_tab_closed",
   "incognito_access_required",
   "incognito_window_ambiguous",
   "login_input_rejected",
+  "login_failed",
   "login_rejected",
   "mother_backfill_failed",
   "mother_tab_incognito",
@@ -56,9 +59,11 @@ const allowedErrors = new Set([
   "request_invalid",
   "selector_not_configured",
   "sms_lab_challenge_failed",
+  "sms_lab_failed",
   "sms_page_action_failed",
   "target_host_permission_required",
   "totp_lab_challenge_failed",
+  "totp_lab_failed",
   "totp_stage_not_reached",
   "workflow_cancelled",
   "workflow_failed",
@@ -223,6 +228,21 @@ export function createWorkflowController(api, options = {}) {
     return true;
   }
 
+  async function scheduleCurrent(delayMs, activeSnapshot) {
+    if (!isCurrent(activeSnapshot)) return false;
+    try {
+      await schedule(state.batchId, delayMs);
+    } catch {
+      await persist({ ...state, stage: "FAILED", error: "workflow_failed" }, activeSnapshot);
+      throw new Error("workflow_failed");
+    }
+    if (!isCurrent(activeSnapshot)) {
+      await api.alarms?.clear?.(`${ALARM_PREFIX}${activeSnapshot.batchId}`);
+      return false;
+    }
+    return true;
+  }
+
   async function executePageAction(tabId, func, args = {}) {
     let registered;
     try {
@@ -271,6 +291,16 @@ export function createWorkflowController(api, options = {}) {
       return await api.tabs.get(tabId);
     } catch {
       return null;
+    }
+  }
+
+  async function removeWindowOrTreatMissingAsSuccess(windowId) {
+    try {
+      await api.windows.remove(windowId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (/No window with id|Window not found|Invalid window id/i.test(message)) return;
+      throw new Error("cleanup_failed");
     }
   }
 
@@ -439,8 +469,121 @@ export function createWorkflowController(api, options = {}) {
         await openOwnedIncognito(authorizationUrl, activeSnapshot);
         return;
       }
-      case "LOGIN":
+      case "LOGIN": {
+        const credentials = await requestNative("get_workflow_credentials", { excel_row: state.excelRow });
+        if (!isCurrent(activeSnapshot)) return;
+        if (credentials?.ok !== true) throw new Error(credentials?.error || "credentials_invalid");
+        const result = await pageActions.submitLogin({
+          tabId: state.incognitoTabId,
+          username: credentials.username,
+          password: credentials.password,
+          selectors: configuredSelectors(),
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (!result?.ok) throw new Error(result?.error || "login_failed");
+        const submittedAt = now();
+        if (!await persist({ ...state, stage: "LOGIN_WAIT", loginSubmittedAt: submittedAt, attempt: 0, error: "" }, activeSnapshot)) return;
+        await scheduleCurrent(30_000, snapshot());
         return;
+      }
+      case "LOGIN_WAIT": {
+        const remaining = (state.loginSubmittedAt ?? 0) + 30_000 - now();
+        if (remaining > 0) {
+          await scheduleCurrent(remaining, activeSnapshot);
+          return;
+        }
+        const result = await pageActions.detectTotp({
+          tabId: state.incognitoTabId,
+          selectors: configuredSelectors(),
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (!result?.ok) throw new Error(result?.error || "totp_stage_not_reached");
+        await transition("TOTP", {}, activeSnapshot);
+        return;
+      }
+      case "TOTP": {
+        if (typeof totpLabController?.run !== "function") throw new Error("totp_lab_failed");
+        const result = await totpLabController.run({
+          motherTabId: state.motherTabId,
+          incognitoTabId: state.incognitoTabId,
+          excelRow: state.excelRow,
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (result?.state !== "SUCCEEDED") throw new Error(result?.error || "totp_lab_failed");
+        await transition("SMS", {}, activeSnapshot);
+        return;
+      }
+      case "SMS": {
+        if (typeof smsLabController?.run !== "function") throw new Error("sms_lab_failed");
+        const result = await smsLabController.run({
+          motherTabId: state.motherTabId,
+          incognitoTabId: state.incognitoTabId,
+          excelRow: state.excelRow,
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (result?.state !== "SUCCEEDED") throw new Error(result?.error || "sms_lab_failed");
+        await transition("ACCEPT", {}, activeSnapshot);
+        return;
+      }
+      case "ACCEPT": {
+        const accepted = await pageActions.clickAccept({
+          tabId: state.incognitoTabId,
+          selectors: configuredSelectors(),
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (!accepted?.ok) throw new Error(accepted?.error || "accept_button_missing");
+        const finalReady = await pageActions.detectFinal({
+          tabId: state.incognitoTabId,
+          selectors: configuredSelectors(),
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (!finalReady?.ok) throw new Error(finalReady?.error || "final_page_not_ready");
+        await transition("FINAL_URL", {}, activeSnapshot);
+        return;
+      }
+      case "FINAL_URL": {
+        const target = await api.tabs.get(state.incognitoTabId);
+        if (!isCurrent(activeSnapshot)) return;
+        const finalUrl = validateFinalUrl(target.url);
+        await api.windows.update(state.motherWindowId, { focused: true });
+        if (!isCurrent(activeSnapshot)) return;
+        const result = await pageActions.backfillMother({
+          tabId: state.motherTabId,
+          finalUrl,
+          selectors: configuredSelectors(),
+        });
+        if (!isCurrent(activeSnapshot)) return;
+        if (!result?.ok) throw new Error(result?.error || "mother_backfill_failed");
+        await transition("MOTHER_BACKFILL", {}, activeSnapshot);
+        return;
+      }
+      case "MOTHER_BACKFILL": {
+        await transition("COMMIT", {}, activeSnapshot);
+        return;
+      }
+      case "COMMIT": {
+        const next = nextRowState(state);
+        if (!await persist({ ...state, ...next, stage: "CLEANUP", attempt: 0, error: "" }, activeSnapshot)) return;
+        await scheduleCurrent(0, snapshot());
+        return;
+      }
+      case "CLEANUP": {
+        if (state.incognitoWindowId) {
+          await removeWindowOrTreatMissingAsSuccess(state.incognitoWindowId);
+          if (!isCurrent(activeSnapshot)) return;
+        }
+        if (!await persist({
+          ...state,
+          stage: "ROW_PREFLIGHT",
+          incognitoTabId: null,
+          incognitoWindowId: null,
+          loginSubmittedAt: null,
+          attempt: 0,
+          error: "",
+        }, activeSnapshot)) return;
+        await scheduleCurrent(0, snapshot());
+        return;
+      }
       default:
         return;
     }
