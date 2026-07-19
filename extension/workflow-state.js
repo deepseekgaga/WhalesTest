@@ -1,4 +1,10 @@
-export const TERMINAL_STAGES = Object.freeze(new Set(["COMPLETED", "FAILED", "CANCELLED"]));
+const terminalStages = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
+
+export const TERMINAL_STAGES = Object.freeze({
+  has(stage) {
+    return terminalStages.has(stage);
+  },
+});
 
 export function createWorkflowState({
   batchId,
@@ -27,6 +33,8 @@ export function nextRowState({ sequence, excelRow } = {}) {
   if (
     !Number.isInteger(sequence) ||
     !Number.isInteger(excelRow) ||
+    sequence < 1 ||
+    excelRow < 2 ||
     excelRow !== sequence + 1
   ) {
     throw new Error("workflow_state_invalid");
@@ -49,7 +57,7 @@ export function formatAccountName(date, sequence) {
 }
 
 export function publicWorkflowState(state) {
-  if (state === null) {
+  if (!state || typeof state !== "object") {
     return {
       running: false,
       state: "IDLE",
@@ -67,7 +75,7 @@ export function publicWorkflowState(state) {
     batchId: state.batchId,
     sequence: state.sequence,
     excelRow: state.excelRow,
-    error: state.error,
-    updatedAt: state.updatedAt,
+    error: state.error ?? "",
+    updatedAt: state.updatedAt ?? null,
   };
 }

@@ -35,6 +35,8 @@ test("createWorkflowState initializes each batch at the first row preflight stat
   assert.ok(TERMINAL_STAGES.has("COMPLETED"));
   assert.ok(TERMINAL_STAGES.has("FAILED"));
   assert.ok(TERMINAL_STAGES.has("CANCELLED"));
+  assert.equal(TERMINAL_STAGES.has("ROW_PREFLIGHT"), false);
+  assert.equal(typeof TERMINAL_STAGES.add, "undefined");
   assert.ok(Object.isFrozen(TERMINAL_STAGES));
 });
 
@@ -46,8 +48,11 @@ test("nextRowState only advances one row when excelRow matches sequence plus one
   for (const state of [
     { sequence: 1, excelRow: 1 },
     { sequence: 1, excelRow: 3 },
+    { sequence: 0, excelRow: 1 },
+    { sequence: -1, excelRow: 0 },
     { sequence: 1.5, excelRow: 2 },
     { sequence: "1", excelRow: 2 },
+    { sequence: true, excelRow: 2 },
     { sequence: 1, excelRow: NaN },
   ]) {
     assert.throws(
@@ -74,15 +79,17 @@ test("formatAccountName formats minute precision account names and rejects inval
 });
 
 test("publicWorkflowState exposes only safe fields and returns a fixed idle state for null", () => {
-  assert.deepEqual(publicWorkflowState(null), {
-    running: false,
-    state: "IDLE",
-    batchId: null,
-    sequence: 0,
-    excelRow: 0,
-    error: "",
-    updatedAt: null,
-  });
+  for (const emptyState of [null, undefined, false, 0, ""]) {
+    assert.deepEqual(publicWorkflowState(emptyState), {
+      running: false,
+      state: "IDLE",
+      batchId: null,
+      sequence: 0,
+      excelRow: 0,
+      error: "",
+      updatedAt: null,
+    });
+  }
 
   const publicState = publicWorkflowState({
     stage: "ROW_PREFLIGHT",
@@ -131,5 +138,22 @@ test("publicWorkflowState derives not running from terminal stages", () => {
     excelRow: 4,
     error: "",
     updatedAt: 123,
+  });
+});
+
+test("publicWorkflowState defaults optional public fields without changing its shape", () => {
+  assert.deepEqual(publicWorkflowState({
+    stage: "ROW_PREFLIGHT",
+    batchId: "batch-002",
+    sequence: 1,
+    excelRow: 2,
+  }), {
+    running: true,
+    state: "ROW_PREFLIGHT",
+    batchId: "batch-002",
+    sequence: 1,
+    excelRow: 2,
+    error: "",
+    updatedAt: null,
   });
 });

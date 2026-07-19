@@ -40,10 +40,29 @@ test("cancelWorkflowOnPage aborts and deletes by run id idempotently", () => {
 });
 
 test("registerWorkflowOnPage rejects empty run ids without creating the registry", () => {
-  for (const runId of ["", null, undefined, 123]) {
+  for (const runId of ["", "   ", "\t\n", null, undefined, 123]) {
     delete globalThis[registryKey];
 
     assert.deepEqual(registerWorkflowOnPage({ runId }), { ok: false, error: "request_invalid" });
     assert.equal(globalThis[registryKey], undefined);
   }
+});
+
+test("registerWorkflowOnPage preserves non-blank run ids exactly", () => {
+  delete globalThis[registryKey];
+
+  assert.deepEqual(registerWorkflowOnPage({ runId: " run-1 " }), { ok: true });
+  assert.equal(globalThis[registryKey].has(" run-1 "), true);
+  assert.equal(globalThis[registryKey].has("run-1"), false);
+});
+
+test("workflow page context handles corrupted registry slots safely", () => {
+  globalThis[registryKey] = { get: true };
+
+  assert.deepEqual(registerWorkflowOnPage({ runId: "run-1" }), { ok: true });
+  assert.ok(globalThis[registryKey] instanceof Map);
+  assert.ok(globalThis[registryKey].get("run-1") instanceof AbortController);
+
+  globalThis[registryKey] = { delete: true };
+  assert.deepEqual(cancelWorkflowOnPage({ runId: "run-1" }), { ok: true });
 });
