@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $sourceDirectory = Join-Path $projectRoot 'extension'
-$packageName = 'cc-batch-chrome-extension-v0.1.0'
+$packageName = 'authorized-mfa-workflow-chrome-extension-v0.1.0'
 $stagingDirectory = Join-Path $OutputDirectory $packageName
 $zipPath = Join-Path $OutputDirectory ($packageName + '.zip')
 
