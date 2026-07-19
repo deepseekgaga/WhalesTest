@@ -251,6 +251,26 @@ test("binds sequence one to row two and reaches LOGIN through one owned incognit
   assert.equal(Object.hasOwn(chrome.session.workflowState, "password"), false);
 });
 
+test("starts every new manual batch from row two and sequence one", async () => {
+  const chrome = makeChrome();
+  const now = { value: 1_000 };
+  let batchNumber = 0;
+  const controller = createWorkflowController(chrome, minimalOptions({
+    now: () => now.value,
+    makeBatchId: () => `batch-${++batchNumber}`,
+  }));
+
+  const first = await controller.start();
+  await fireNextAlarm(controller, chrome, now);
+  assert.equal(controller.getState().state, "COMPLETED");
+
+  const second = await controller.start();
+  assert.equal(first.batchId, "batch-1");
+  assert.equal(second.batchId, "batch-2");
+  assert.equal(second.sequence, 1);
+  assert.equal(second.excelRow, 2);
+});
+
 test("fails before side effects when the active tab is not the exact mother URL", async () => {
   const chrome = makeChrome({ motherUrl: "http://127.0.0.1:9527/other" });
   const controller = createWorkflowController(chrome, minimalOptions());

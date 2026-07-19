@@ -1,5 +1,8 @@
 const terminalStages = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 
+export const WORKFLOW_START_ROW = 2;
+export const WORKFLOW_START_SEQUENCE = 1;
+
 export const WORKFLOW_ERROR_CODES = new Set([
   "accept_button_missing",
   "another_workflow_running",
@@ -85,8 +88,8 @@ export function createWorkflowState({
   return {
     batchId,
     stage: "ROW_PREFLIGHT",
-    sequence: 1,
-    excelRow: 2,
+    sequence: WORKFLOW_START_SEQUENCE,
+    excelRow: WORKFLOW_START_ROW,
     motherTabId,
     motherWindowId,
     incognitoTabId: null,

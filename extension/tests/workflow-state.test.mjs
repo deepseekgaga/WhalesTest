@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   TERMINAL_STAGES,
+  WORKFLOW_START_ROW,
+  WORKFLOW_START_SEQUENCE,
   createWorkflowState,
   formatAccountName,
   isRetryableWorkflowError,
@@ -40,6 +42,8 @@ test("createWorkflowState initializes each batch at the first row preflight stat
   assert.equal(TERMINAL_STAGES.has("ROW_PREFLIGHT"), false);
   assert.equal(typeof TERMINAL_STAGES.add, "undefined");
   assert.ok(Object.isFrozen(TERMINAL_STAGES));
+  assert.equal(WORKFLOW_START_ROW, 2);
+  assert.equal(WORKFLOW_START_SEQUENCE, 1);
 });
 
 test("nextRowState only advances one row when excelRow matches sequence plus one", () => {
