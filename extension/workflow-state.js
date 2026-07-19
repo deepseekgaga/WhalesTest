@@ -132,9 +132,8 @@ export function isRetryableWorkflowError(code) {
 
 export function safeWorkflowError(error, fallback = "workflow_failed") {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  const firstLine = message.split(/\r?\n/, 1)[0].trim();
-  const match = firstLine.match(/^([a-z_]+)(?=$|[^a-z0-9_])/);
-  const code = match?.[0] ?? "";
+  const match = message.trim().match(/^([a-z][a-z0-9_]{1,64})(?::.*)?$/);
+  const code = match?.[1] ?? "";
   return WORKFLOW_ERROR_CODES.has(code) ? code : fallback;
 }
 
