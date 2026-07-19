@@ -2,13 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createBatchController, createExtensionRuntime } from "../background.js";
+import { WORKFLOW_SELECTORS } from "../workflow-selectors.js";
 
 function makeChrome(options = {}) {
   const updates = [];
   const processed = [];
+  const alarmListeners = [];
   const api = {
     updates,
     processed,
+    alarmListeners,
     runtime: {
       id: "ext",
       onMessage: { addListener(listener) { api.messageListener = listener; } },
@@ -72,6 +75,7 @@ function makeLabChrome({
   const createdTabs = [];
   const removedTabs = [];
   const reloadedTabs = [];
+  const alarmListeners = [];
   const tabsById = new Map();
   if (motherTab) tabsById.set(motherTab.id, motherTab);
   if (targetTab) tabsById.set(targetTab.id, targetTab);
@@ -144,10 +148,73 @@ function makeLabChrome({
       async download() { return 1; },
       async search() { return []; },
     },
-    storage: { local: { async set() {}, async get() { return {}; } } },
+    alarms: { onAlarm: { addListener(listener) { alarmListeners.push(listener); } } },
+    storage: {
+      local: { async set() {}, async get() { return {}; } },
+      session: { async get() { return {}; }, async set() {} },
+    },
     action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} },
   };
   return api;
+}
+
+function makeWorkflowChrome({
+  workflowState = { running: false, state: "IDLE", batchId: null, sequence: 0, excelRow: 0, error: "", updatedAt: null },
+  ccRunning = false,
+  rejectResumeAlarm = false,
+} = {}) {
+  const alarmListeners = [];
+  const session = {};
+  if (workflowState?.batchId && workflowState.state && workflowState.state !== "IDLE") {
+    session.workflowState = {
+      batchId: workflowState.batchId,
+      stage: workflowState.state,
+      sequence: workflowState.sequence ?? 1,
+      excelRow: workflowState.excelRow ?? 2,
+      motherTabId: 10,
+      motherWindowId: 1,
+      incognitoTabId: null,
+      incognitoWindowId: null,
+      attempt: 0,
+      loginSubmittedAt: null,
+      error: workflowState.error ?? "",
+      updatedAt: workflowState.updatedAt ?? 1,
+    };
+  }
+  return {
+    alarmListeners,
+    session,
+    runtime: {
+      id: "ext",
+      onMessage: { addListener(listener) { this.listener = listener; } },
+      connectNative() { throw new Error("native_host_unavailable"); },
+    },
+    tabs: {
+      async query() { return [{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }]; },
+    },
+    alarms: {
+      onAlarm: { addListener(listener) { alarmListeners.push(listener); } },
+      async create() {
+        if (rejectResumeAlarm) throw new Error("alarm rejected");
+      },
+      async clear() { return true; },
+    },
+    storage: {
+      local: { async set() {}, async get() { return { ccBatchState: { running: ccRunning } }; } },
+      session: {
+        async get(key) { return { [key]: session[key] }; },
+        async set(values) { Object.assign(session, structuredClone(values)); },
+      },
+    },
+    downloads: {
+      onCreated: { addListener() {} },
+      onChanged: { addListener() {} },
+      onDeterminingFilename: { addListener() {} },
+      async download() { return 1; },
+      async search() { return []; },
+    },
+    action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} },
+  };
 }
 
 const CONFIGURED_SMS_SELECTORS = Object.freeze({
@@ -155,6 +222,13 @@ const CONFIGURED_SMS_SELECTORS = Object.freeze({
   sendButton: "#send",
   codeInput: "#code",
   submitButton: "#submit",
+});
+
+const configuredSelectors = Object.freeze({
+  ...WORKFLOW_SELECTORS,
+  motherFinalUrlInput: "#result-url",
+  motherFinalConfirmButton: "#save-result",
+  motherFinalSuccess: ".save-success",
 });
 
 function makeSmsLabChrome({
@@ -171,6 +245,7 @@ function makeSmsLabChrome({
   const createdTabs = [];
   const removedTabs = [];
   const reloadedTabs = [];
+  const alarmListeners = [];
   const tabsById = new Map();
   if (motherTab) tabsById.set(motherTab.id, motherTab);
   if (targetTab) tabsById.set(targetTab.id, targetTab);
@@ -345,9 +420,131 @@ test("suggests the configured subdirectory for active ZIP downloads", async () =
 
 test("declares only the fixed TOTP and SMS Lab hosts plus minimal extension permissions", async () => {
   const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
-  assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting"]);
-  assert.deepEqual(manifest.host_permissions, ["http://totp-lab.local/*", "http://sms-lab.local/*"]);
-  assert.equal(JSON.stringify(manifest).includes("<all_urls>"), false);
+  assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"]);
+  assert.deepEqual(manifest.host_permissions, [
+    "http://127.0.0.1:9527/*",
+    "http://auth-target.local/*",
+    "http://totp-lab.local/*",
+    "http://sms-lab.local/*",
+  ]);
+  assert.equal(manifest.incognito, "spanning");
+  assert.doesNotMatch(JSON.stringify(manifest), /<all_urls>|clipboardRead|"debugger"/);
+});
+
+test("registers exactly one workflow alarm listener and returns the workflow controller", () => {
+  const chrome = makeWorkflowChrome();
+  const runtime = createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  assert.equal(chrome.alarmListeners.length, 1);
+  assert.equal(typeof runtime.workflowController.start, "function");
+  assert.equal(typeof runtime.workflowController.cancel, "function");
+});
+
+test("workflow resume errors are caught without rejecting runtime creation", async () => {
+  const chrome = makeWorkflowChrome({
+    workflowState: { running: true, state: "ROW_PREFLIGHT", batchId: "workflow-batch-1", sequence: 1, excelRow: 2, error: "", updatedAt: 1 },
+    rejectResumeAlarm: true,
+  });
+
+  assert.doesNotThrow(() => createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-2" },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test("routes strict workflow start cancel and state messages with structured responses", async () => {
+  const chrome = makeWorkflowChrome();
+  const runtime = createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+
+  const invalidStart = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow", password: "secret" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+  assert.deepEqual(invalidStart, { ok: false, error: "request_invalid" });
+
+  const startResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+  assert.equal(startResponse.ok, true);
+  assert.equal(startResponse.result.batchId, "workflow-batch-1");
+  assert.equal(startResponse.result.state, "ROW_PREFLIGHT");
+  assert.equal(runtime.workflowController.getState().running, true);
+
+  const stateResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "workflow_state" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+  assert.deepEqual(stateResponse, { ok: true, result: runtime.workflowController.getState() });
+
+  const invalidCancel = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "cancel_workflow", batchId: "" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+  assert.deepEqual(invalidCancel, { ok: false, error: "request_invalid" });
+
+  const cancelResponse = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "cancel_workflow", batchId: "workflow-batch-1" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+  assert.equal(cancelResponse.ok, true);
+  assert.equal(cancelResponse.result.state, "CANCELLED");
+});
+
+test("rejects workflow route senders outside the extension", async () => {
+  const chrome = makeWorkflowChrome();
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+  for (const message of [{ type: "start_workflow" }, { type: "workflow_state" }, { type: "cancel_workflow" }]) {
+    const response = await new Promise((resolve) => {
+      const keepChannelOpen = chrome.runtime.onMessage.listener(message, { id: "other" }, resolve);
+      assert.equal(keepChannelOpen, false);
+    });
+    assert.deepEqual(response, { ok: false, error: "sender_rejected" });
+  }
+});
+
+test("keeps old CC batch route shape when a workflow is running", async () => {
+  const chrome = makeWorkflowChrome();
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+  await new Promise((resolve) => {
+    chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+  });
+
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.equal(response.running, false);
+  assert.equal(response.lastError, "another_workflow_running");
+  assert.equal(Object.hasOwn(response, "ok"), false);
+});
+
+test("workflow start reports another_workflow_running while an old CC batch is running", async () => {
+  const chrome = makeWorkflowChrome();
+  createExtensionRuntime(chrome, {
+    workflow: { selectors: configuredSelectors, makeBatchId: () => "workflow-batch-1" },
+  });
+  await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start_workflow" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, true);
+  });
+
+  const response = await new Promise((resolve) => {
+    const keepChannelOpen = chrome.runtime.onMessage.listener({ type: "start" }, { id: "ext" }, resolve);
+    assert.equal(keepChannelOpen, false);
+  });
+
+  assert.equal(response.running, false);
+  assert.equal(response.lastError, "another_workflow_running");
 });
 
 test("routes run_totp_lab through the native host and injects into the requested tab", async () => {

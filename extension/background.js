@@ -1,6 +1,7 @@
 import { createTotpController } from "./totp-controller.js";
 import { createTotpLabController } from "./totp-lab-controller.js";
 import { createSmsLabController } from "./sms-lab-controller.js";
+import { createWorkflowController } from "./workflow-controller.js";
 
 const HOST_NAME = "com.whalestest.cc_batch";
 const DOWNLOAD_SUBDIRECTORY = "jingshajingsha/txt保存";
@@ -264,10 +265,19 @@ export function createExtensionRuntime(api, options = {}) {
   const totpController = createTotpController(api);
   const totpLabController = createTotpLabController(api);
   const smsLabController = createSmsLabController(api, options.smsLab ?? {});
+  const workflowController = createWorkflowController(api, {
+    ...(options.workflow ?? {}),
+    totpLabController,
+    smsLabController,
+    isCcBatchRunning: () => batchController.getState().running,
+  });
   const allowedTotpLabKeys = new Set(["type", "motherTabId", "incognitoTabId", "excelRow"]);
   const allowedSmsLabRunKeys = new Set(["type", "motherTabId", "incognitoTabId", "excelRow"]);
   const allowedSmsLabCancelKeys = new Set(["type", "runId"]);
   const allowedSmsLabStateKeys = new Set(["type"]);
+  const allowedWorkflowStartKeys = new Set(["type"]);
+  const allowedWorkflowCancelKeys = new Set(["type", "batchId"]);
+  const allowedWorkflowStateKeys = new Set(["type"]);
 
   function validateTotpLabMessage(message) {
     return hasExactKeys(message, allowedTotpLabKeys) &&
@@ -292,7 +302,44 @@ export function createExtensionRuntime(api, options = {}) {
     return hasExactKeys(message, allowedSmsLabStateKeys);
   }
 
+  api.alarms?.onAlarm?.addListener?.((alarm) => { void workflowController.onAlarm(alarm); });
+  void workflowController.resume().catch(() => {});
+
   const listener = (message, sender, sendResponse) => {
+    if (message?.type === "start_workflow" || message?.type === "cancel_workflow" || message?.type === "workflow_state") {
+      if (sender?.id !== api.runtime.id) {
+        sendResponse({ ok: false, error: "sender_rejected" });
+        return false;
+      }
+      if (message.type === "start_workflow") {
+        if (!hasExactKeys(message, allowedWorkflowStartKeys)) {
+          sendResponse({ ok: false, error: "request_invalid" });
+          return false;
+        }
+        void workflowController.start()
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }));
+        return true;
+      }
+      if (message.type === "cancel_workflow") {
+        const valid = hasExactKeys(message, allowedWorkflowCancelKeys) &&
+          (!Object.hasOwn(message, "batchId") || isNonEmptyString(message.batchId));
+        if (!valid) {
+          sendResponse({ ok: false, error: "request_invalid" });
+          return false;
+        }
+        void workflowController.cancel(message.batchId)
+          .then((result) => sendResponse({ ok: true, result }))
+          .catch((error) => sendResponse({ ok: false, error: safeRouteError(error, "workflow_route_failed") }));
+        return true;
+      }
+      if (!hasExactKeys(message, allowedWorkflowStateKeys)) {
+        sendResponse({ ok: false, error: "request_invalid" });
+        return false;
+      }
+      sendResponse({ ok: true, result: workflowController.getState() });
+      return false;
+    }
     if (message?.type === "run_totp" || message?.type === "cancel_totp") {
       const senderMatchesTarget = message.tabId == null || sender?.tab?.id == null || sender.tab.id === message.tabId;
       if (sender?.id !== api.runtime.id || !senderMatchesTarget) {
@@ -367,6 +414,10 @@ export function createExtensionRuntime(api, options = {}) {
       return false;
     }
     if (message?.type === "start") {
+      if (workflowController.getState().running) {
+        sendResponse({ ...batchController.getState(), lastError: "another_workflow_running" });
+        return false;
+      }
       void batchController.start();
       sendResponse(batchController.getState());
       return false;
@@ -378,7 +429,7 @@ export function createExtensionRuntime(api, options = {}) {
     return false;
   };
   api.runtime.onMessage.addListener(listener);
-  return { batchController, totpController, totpLabController, smsLabController, listener };
+  return { batchController, totpController, totpLabController, smsLabController, workflowController, listener };
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage) {

@@ -21,7 +21,15 @@ $requiredFiles = @(
   'totp-lab-page.js',
   'sms-lab-selectors.js',
   'sms-lab-page.js',
-  'sms-lab-controller.js'
+  'sms-lab-controller.js',
+  'workflow-selectors.js',
+  'workflow-urls.js',
+  'workflow-state.js',
+  'workflow-page-context.js',
+  'mother-page.js',
+  'login-page.js',
+  'final-page.js',
+  'workflow-controller.js'
 )
 
 if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
