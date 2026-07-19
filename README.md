@@ -1,220 +1,224 @@
-# Chrome 批量下载、本地 TOTP 与授权滑块靶场测试工具
+# 授权隔离本地靶场
 
-本项目面向完全授权、隔离的本地测试环境。Chrome 扩展覆盖批处理和 TOTP 验证流程；独立 Python 工具通过 Flask 靶场显式提供的实验钩子验证滑块之后的页面流程。
+这是一个仅面向已授权测试环境的 Chrome MV3 + Native Host + Excel 物理行靶场。它把母页授权、无痕登录、TOTP、短信辅助页和最终 URL 回填串成一条受控流程，并保留一个独立的旧 CC 批处理分区。
 
-## 当前范围
+它不用于未授权系统，也不包含商业验证码绕过、滑块绕过、系统剪贴板读取或通配站点访问。
 
-- 母窗口必须处于正常激活状态。
-- 目标窗口必须是无痕窗口。
-- 辅助页会在母窗口右侧打开。
-- Excel 第 1 行是表头，数据从第 2 行开始。
-- 不允许空白行参与映射。
-- 验证码页在约 15、30、45 秒最多刷新三次，并在约 55–60 秒完成最后一次有界读取；60 秒是硬截止。
-- 辅助页同时显示多个候选验证码时，直接拒绝，不做猜测。
-- TOTP 成功后的短信流程由上层显式调用独立 `run_sms_lab`，并复用同一组 `motherTabId`、`incognitoTabId` 和 `excelRow`。
-- 滑块研究工具只允许 `http://test-target.local`，不会生成真人化鼠标轨迹。
+## 目录
 
-## 配置文件
-
-`native_host/config.json` 需要保持固定、本地化、可审计的测试配置：
-
-- `input_excel`: `C:\Users\HE\Downloads\jingshajingsha\cc汇总.xlsx`
-- `totp_lab_url`: `http://totp-lab.local/`
-- `totp_lab_test_hook`: `__FILL_TOTP_TEST_HOOK__`
-
-其余批处理占位字段保持原有用途不变。
+- `extension/`：Chrome 扩展，负责母页、无痕页、TOTP/SMS 和弹窗控制。
+- `native_host/`：Native Host，负责从 Excel 物理行读取凭据和本地辅助页参数。
+- `scripts/`：安装、验证和打包脚本。
+- `tests/`：Python 集成测试。
+- `extension/tests/`：Node 测试。
+- `tools/`：本地授权靶场辅助脚本。
+- `docs/superpowers/`：计划和设计文档。
+- `dist/`、`dist-review/`：打包产物和审阅产物。
 
 ## 安装
 
-1. 在 `chrome://extensions` 打开开发者模式。
-2. 加载 `extension` 目录。
-3. 执行：
+### 1. 加载扩展
+
+1. 打开 `chrome://extensions/`。
+2. 开启开发者模式。
+3. 加载 `extension/` 目录。
+4. 在扩展详情页开启“允许在无痕模式下运行”。
+
+### 2. 安装 Native Host
+
+`scripts/install-native-host.ps1` 会把 Native Host 安装到：
+
+- `%LOCALAPPDATA%\WhalestestCcBatch\native_host`
+- `%LOCALAPPDATA%\WhalestestCcBatch\manifest\com.whalestest.cc_batch.json`
+- `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.whalestest.cc_batch`
+
+安装命令：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-native-host.ps1 -ExtensionId <32位扩展ID>
 ```
 
-4. 修改 `native_host/config.json` 后，重新运行安装脚本，让本地 Native Host 配置同步。
+`ExtensionId` 必须匹配 `^[a-p]{32}$`。
 
-## 本地短信验证码靶场
+### 3. 验证安装
 
-短信模块只用于本地授权靶场。它不会接管批处理主循环，也不会替 TOTP 模块推进 Excel 行号。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -ExtensionId <32位扩展ID>
+```
 
-### 调用边界
+这个脚本会检查安装清单、Host manifest、注册表项、文件哈希和 Native Messaging ping。
 
-上层流程在 TOTP 成功后调用独立消息 `run_sms_lab`。调用方必须传入与 TOTP 成功时相同的：
+## Native Host 配置
 
-- `motherTabId`：普通窗口中的母页标签页，必须保持 active。
-- `incognitoTabId`：同一个无痕标签页，先接收手机号，再接收短信验证码。
-- `excelRow`：Excel 物理行号。第 1 行是表头，数据行从第 2 行开始。
+`native_host/config.json` 当前包含以下本地配置：
 
-短信模块不会推进到下一行，不会点击最终接受按钮，也不会启动下一任务。它只完成本地短信请求、读取唯一可见 6 位验证码、回填到同一个无痕标签页这一个阶段。
+- `input_excel`：输入 Excel。
+- `url_column`：旧 CC 批处理的 URL 列名。
+- `txt_directory` / `download_directory`：旧 CC 批处理输出目录。
+- `output_excel`：旧 CC 批处理输出工作簿。
+- `download_timeout_seconds`：下载等待超时。
+- `field_mappings`：旧 CC 批处理字段映射。
+- `field_continuation_lines`：旧 CC 批处理续行规则。
+- `totp_lab_url`：固定为 `http://totp-lab.local/`。
+- `totp_lab_test_hook`：当前仍是 `__FILL_TOTP_TEST_HOOK__` 占位符，真实联调前必须替换。
 
-### Excel 列约定
+## Excel 列绑定
 
-`native_host/cc_batch/sms_lab.py` 只读取第一个工作表的同一物理行：
+本项目按物理行读取数据。第 1 行永远是表头，序号 `N` 对应 Excel 物理行 `N + 1`。
 
-| 列 | 内容 |
+| 列 | 含义 |
 | --- | --- |
-| D | 手机号，按单元格原值精确传递，不修剪格式。 |
-| E | 完整 `http://sms-lab.local/*` 靶场 URL。 |
+| A | 登录用户名 |
+| B | 登录密码 |
+| C | TOTP secret |
+| D | 手机号 |
+| E | SMS 辅助链接 |
 
-E 列 URL 必须是 `http://sms-lab.local/` 下的完整 URL；模块拒绝 HTTPS、外部主机、子域名、端口、凭据、片段、空白或控制字符。Native Host 响应只返回 `phone` 和 `challenge_url`，不返回账号、密码、TOTP secret 或短信验证码。
+约束：
 
-### 选择器配置
+- `get_workflow_credentials` 只读取同一物理行的 A/B。
+- TOTP 辅助页只读取同一物理行的 C。
+- SMS 辅助页只读取同一物理行的 D/E。
+- 表头行不参与业务处理。
+- 空行不作为有效数据行。
 
-运行前必须在 `extension/sms-lab-selectors.js` 配置四个页面选择器字面量。不要修改内部 `PLACEHOLDERS` 哨兵值；它们用于检测未配置状态。保留 `PLACEHOLDERS` 不变，并把导出的 `SMS_LAB_SELECTORS` 替换为四个真实选择器字符串：
+## 授权工作流
 
-```javascript
-export const SMS_LAB_SELECTORS = Object.freeze({
-  phoneInput: "#sms-phone",
-  sendButton: "#sms-send",
-  codeInput: "#sms-code",
-  submitButton: "#sms-submit",
-});
-```
+授权工作流由弹窗中的“授权登录工作流”分区启动，母页必须满足：
 
-四个导出值分别定位手机号输入框、发送短信按钮、验证码输入框和提交验证码按钮。只要 `SMS_LAB_SELECTORS` 仍等于占位哨兵值，控制器会在请求 Native Host 前失败。
+- 当前活动标签页是普通窗口。
+- URL 精确等于 `http://127.0.0.1:9527/`。
+- 不是无痕标签页。
 
-页面动作在按钮提供 `click()` 时优先点击，兼容 `type="button"` 点击处理器和原生提交按钮；只有按钮没有可调用的 `click()` 时才回退到 `form.requestSubmit(button)`。发送和提交动作异常分别返回固定错误 `sms_send_failed`、`sms_submit_failed`。
+流程顺序是：
 
-### 标签页与验证码读取
+1. 读取当前序号对应的 A/B 凭据。
+2. 在母页创建账号并生成授权链接。
+3. 在新的无痕窗口中打开授权链接。
+4. 完成账号密码登录。
+5. 进入 TOTP 阶段。
+6. 进入 SMS 阶段。
+7. 点击最终接受按钮。
+8. 读取无痕页最终 URL。
+9. 回填到母页。
+10. 只有母页最终回填成功后才进入 `COMMIT` 并推进到下一行。
 
-短信控制器保持母页 active，不切换母页焦点。辅助页使用 `chrome.tabs.create` 在母页右侧打开，参数包含 `active: false`，并且只允许停留在 `http://sms-lab.local/*`。如果辅助页加载后重定向到其他来源，控制器会拒绝并停止读取。
+行为边界：
 
-验证码读取规则：
+- 成功后，无痕窗口会在清理阶段关闭。
+- 失败后，无痕窗口会保留，便于现场排查。
+- 失败状态会显示序号、Excel 行、阶段和固定错误码，不显示账号、密码、secret 或最终 URL。
 
-- 同一个无痕标签页完成手机号发送和验证码提交。
-- 辅助页加载完成后立即读取；验证码持续缺失时在约 15、30、45 秒各刷新一次，完整超时路径恰好刷新三次。
-- 约 55 秒开始最后一个 5 秒读取窗口，不再刷新；读取必须在 60 秒硬截止前完成，截止后返回未找到验证码。
-- 只接受唯一可见的 6 位数字。
-- 同时出现多个候选验证码时返回歧义错误，不做猜测。
+`extension/workflow-selectors.js` 里有三个母页最终回填选择器必须填写：
 
-取消 `cancel_sms_lab` 会中止当前 run，尽力通知无痕页清理页面令牌，并关闭已知辅助页。取消后不会继续提交验证码。
+- `motherFinalUrlInput`
+- `motherFinalConfirmButton`
+- `motherFinalSuccess`
 
-### 消息示例
+`auth-target.local` 目前仍是占位 origin。真实联调前必须把 `extension/manifest.json` 里的这个 origin 替换为实际授权站点的固定 origin，并同步 `extension/workflow-controller.js` 的 `targetOrigin`。
 
-`run_sms_lab` 示例：
+## 弹窗
 
-```javascript
-chrome.runtime.sendMessage({
-  type: "run_sms_lab",
-  motherTabId: 101,
-  incognitoTabId: 202,
-  excelRow: 2,
-});
-```
+弹窗分成两个互斥分区：
 
-`cancel_sms_lab` 示例：
+| 分区 | 用途 | 消息 |
+| --- | --- | --- |
+| 授权登录工作流 | 运行母页到无痕登录再回填母页的主流程 | `start_workflow` / `cancel_workflow` / `workflow_state` |
+| 旧 CC 批处理 | 旧的批量下载分区 | `start` / `state` |
 
-```javascript
-chrome.runtime.sendMessage({
-  type: "cancel_sms_lab",
-  runId: "sms-run-placeholder",
-});
-```
+互斥规则：
 
-`sms_lab_state` 示例：
+- 任一分区运行时，另一个分区的启动按钮会被禁用。
+- 工作流和旧 CC 批处理不会同时起跑。
 
-```javascript
-chrome.runtime.sendMessage({
-  type: "sms_lab_state",
-});
-```
+状态展示：
 
-这些消息不得携带 phone、url、code、password 或其他敏感字段；Service Worker 会拒绝额外字段。
+- 授权工作流显示状态、序号、Excel 行、阶段和错误码。
+- 旧 CC 批处理显示状态、进度、成功数、失败数、当前 URL 和最近错误。
 
-## 授权滑块靶场测试钩子
+## TOTP / SMS 辅助页
 
-脚本位于 `tools/authorized_slider_lab.py`。它不会拖动滑块、识别缺口或模拟真人行为，只会调用固定的同源测试接口 `/__lab__/slider/approve`，然后检查 `.captcha-success` 是否可见或 `#slider-handle` 是否已经消失。
+### TOTP
 
-### 安装 Playwright
+- 使用 `http://totp-lab.local/`。
+- 读取同一物理行的 C 列 secret。
+- 只返回构造出的挑战 URL，不回传 secret。
+- `totp_lab_test_hook` 必须在真实联调前配置成有效值。
 
-```powershell
-python -m pip install playwright
-playwright install chromium
-```
+### SMS
 
-### Flask 靶场测试接口
+- 使用同一物理行的 D 列手机号和 E 列本地 SMS 链接。
+- 只允许 `http://sms-lab.local/*`。
+- 只返回 `phone` 和 `challenge_url`。
+- 不接商业接码平台，也不放宽到任意外部站点。
 
-测试接口必须只在实验模式下可用。令牌来自服务器环境变量，比较过程使用 `secrets.compare_digest`，并且接口不能接受客户端提供的轨迹、位移或验证分数。
+## 权限与边界
 
-```python
-import os
-import secrets
+`extension/manifest.json` 当前请求的权限是：
 
-from flask import abort, jsonify, request, session
+- `nativeMessaging`
+- `tabs`
+- `downloads`
+- `storage`
+- `activeTab`
+- `scripting`
+- `alarms`
 
+当前请求的主机权限只有：
 
-@app.post("/__lab__/slider/approve")
-def approve_slider_for_lab():
-    if not app.config.get("SLIDER_LAB_TEST_MODE", False):
-        abort(404)
+- `http://127.0.0.1:9527/*`
+- `http://auth-target.local/*`
+- `http://totp-lab.local/*`
+- `http://sms-lab.local/*`
 
-    expected = os.environ.get("SLIDER_LAB_TEST_TOKEN", "")
-    supplied = request.headers.get("X-Lab-Test-Token", "")
-    if not expected or not secrets.compare_digest(expected, supplied):
-        abort(403)
+它不声明：
 
-    session["slider_verified"] = True
-    return jsonify(ok=True)
-```
+- `<all_urls>`
+- `clipboardRead`
+- `debugger`
+- 任意 HTTP/HTTPS 通配权限
 
-Flask 启动时可通过环境变量显式打开实验模式：
+扩展显式使用 `incognito: "spanning"`。用户仍需在 Chrome 扩展详情页开启无痕运行。
 
-```python
-app.config["SLIDER_LAB_TEST_MODE"] = (
-    os.environ.get("SLIDER_LAB_TEST_MODE") == "true"
-)
-```
+如果对目标标签执行注入失败，控制器会映射为 `target_host_permission_required`，而不是回退到更宽的权限。
 
-### 运行
+## 固定错误码
 
-客户端和 Flask 服务端必须设置相同的实验令牌。令牌不会写入命令行参数、日志、截图文件名或公开运行结果。
+这些错误码是当前实现中会公开显示的稳定码：
 
-```powershell
-$env:SLIDER_LAB_TEST_MODE = "true"
-$env:SLIDER_LAB_TEST_TOKEN = "替换为实验专用随机令牌"
+| 错误码 | 含义 |
+| --- | --- |
+| `mother_url_invalid` | 当前活动母页不是精确的 `http://127.0.0.1:9527/`。 |
+| `selector_not_configured` | 必需选择器缺失、为空或仍是占位符。 |
+| `authorization_origin_mismatch` | 授权链接的 origin 与配置的 target origin 不一致。 |
+| `incognito_access_required` | Chrome 不允许创建或接管无痕窗口。 |
+| `target_host_permission_required` | 对目标标签执行脚本注入时权限不足。 |
+| `login_rejected` | 登录表单提交后，页面明确拒绝或未进入 TOTP 阶段。 |
+| `totp_stage_not_reached` | 没有观测到 TOTP 阶段。 |
+| `mother_backfill_failed` | 最终 URL 回填母页失败。 |
+| `incognito_window_ambiguous` | 找到了多个同批次无痕 handoff 标签。 |
+| `another_workflow_running` | 旧 CC 批处理或另一个授权工作流已经在运行。 |
+| `workflow_failed` | 内部调度、持久化或清理出现通用失败。 |
+| `page_not_stable` | 页面在限定时间内一直不稳定，未达到可操作状态。 |
+| `credentials_invalid` | 同一物理行的 A/B 凭据为空或无效。 |
 
-python tools/authorized_slider_lab.py --headed
-```
+## 验证
 
-可配置参数：
-
-```powershell
-python tools/authorized_slider_lab.py `
-  --url http://test-target.local/slider-captcha `
-  --success-selector .captcha-success `
-  --slider-selector '#slider-handle' `
-  --attempts 3 `
-  --screenshot-dir artifacts/slider-lab
-```
-
-退出码：
-
-- `0`：检测到靶场验证成功状态。
-- `1`：测试钩子被拒绝，或三次尝试后没有成功状态。
-- `2`：URL、令牌或 Playwright 依赖配置错误。
-
-失败截图默认保存到 `artifacts/slider-lab`。测试钩子路径、授权主机和最多三次尝试均在脚本中固定限制。
-
-## 测试
+下面这些命令用于当前仓库的全量验证：
 
 ```powershell
 python -m unittest discover -s native_host/tests -v
 python -m unittest discover -s tests -v
 node --test extension/tests/*.test.mjs
-python -m unittest tests.test_authorized_slider_lab -v
-python tools/authorized_slider_lab.py --help
-powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -OutputDirectory (Join-Path $env:TEMP 'sms-final')
+python -m py_compile native_host\host.py native_host\cc_batch\*.py tools\authorized_slider_lab.py
+powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -OutputDirectory (Join-Path $env:TEMP 'whalestest-extension-package')
+git diff --check
+rg -n "<all_urls>|clipboardRead|debugger|2fa\.run|commercial receiver|drag_to|page\.mouse" extension native_host scripts tests README.md
 ```
 
-## 安全边界
+## 当前边界
 
-- 不做验证码绕过，不做滑块绕过。
-- 不生成或回放真人化拖动轨迹，不使用 `page.mouse` 或 `drag_to`。
-- 不记录 phone、url、code、password、手机号、短信链接、验证码、密钥或密码。
-- 不使用 `<all_urls>`。
-- 不连接商业接码平台、commercial receiver 或 `2fa.run`。
-- 不实现 CAPTCHA、拖拽、滑块缺口识别、`generate_track` 或任何自动绕过逻辑。
-- 仅为授权环境中的本地测试保留必要权限。
+- 真实联调前，`auth-target.local` 必须替换为实际授权 origin。
+- 真实联调前，`extension/workflow-selectors.js` 的三个母页最终选择器必须填写。
+- 真实联调前，`native_host/config.json` 的 `totp_lab_test_hook` 仍需替换。
+- 本 README 只记录当前实现和已接入边界，不声称已经完成真实 Chrome 联调。
