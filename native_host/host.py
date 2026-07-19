@@ -14,6 +14,7 @@ from native_host.cc_batch.protocol import ProtocolError, read_message, write_mes
 from native_host.cc_batch.sms_lab import SmsLabError, build_sms_lab_challenge
 from native_host.cc_batch.totp import TotpError, generate_totp
 from native_host.cc_batch.totp_lab import TotpLabError, build_totp_lab_challenge
+from native_host.cc_batch.workflow_credentials import WorkflowCredentialsError, read_workflow_credentials
 
 
 class HostApplication:
@@ -72,6 +73,21 @@ class HostApplication:
         except ConfigError:
             return {"ok": False, "error": "input_excel_invalid", "fatal": False}
 
+    def _get_workflow_credentials(self, message: dict[str, Any]) -> dict[str, Any]:
+        if set(message) - {"command", "excel_row", "request_id"}:
+            return {"ok": False, "error": "request_invalid", "fatal": False}
+        excel_row = message.get("excel_row")
+        if isinstance(excel_row, bool) or not isinstance(excel_row, int) or excel_row < 2:
+            return {"ok": False, "error": "request_invalid", "fatal": False}
+        try:
+            config = load_config(self.config_path)
+            credentials = read_workflow_credentials(config.input_excel, excel_row)
+            return {"ok": True, "username": credentials.username, "password": credentials.password}
+        except WorkflowCredentialsError as exc:
+            return {"ok": False, "error": exc.code, "fatal": False}
+        except ConfigError:
+            return {"ok": False, "error": "input_excel_invalid", "fatal": False}
+
     def dispatch(self, message: dict[str, Any]) -> dict[str, Any]:
         command = message.get("command")
         if command == "ping":
@@ -82,6 +98,8 @@ class HostApplication:
             return self._get_totp_lab_challenge(message)
         if command == "get_sms_lab_challenge":
             return self._get_sms_lab_challenge(message)
+        if command == "get_workflow_credentials":
+            return self._get_workflow_credentials(message)
         if command not in {"preflight", "prepare_batch", "process_result", "get_state", "finish_batch"}:
             return {"ok": False, "error": "unknown_command"}
         try:

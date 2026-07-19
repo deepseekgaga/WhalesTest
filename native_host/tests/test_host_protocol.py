@@ -102,6 +102,33 @@ class HostProtocolTests(unittest.TestCase):
         self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
         self.assertNotIn("secret", str(result))
 
+    def test_get_workflow_credentials_returns_only_credentials_from_exact_row(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            input_path = directory / "accounts.xlsx"
+            write_xlsx(
+                input_path,
+                [["Username", "Password", "Secret"], ["alice", "pass", "never-return-this"]],
+            )
+            app = HostApplication(self._write_totp_config(directory, input_path))
+
+            result = app.dispatch({"command": "get_workflow_credentials", "excel_row": 2})
+
+            self.assertEqual(result, {"ok": True, "username": "alice", "password": "pass"})
+            self.assertNotIn("never-return-this", str(result))
+
+    def test_get_workflow_credentials_rejects_invalid_requests_without_echoing_values(self):
+        cases = [
+            {"command": "get_workflow_credentials", "excel_row": 1},
+            {"command": "get_workflow_credentials", "excel_row": True},
+            {"command": "get_workflow_credentials", "excel_row": 2, "username": "leaked-user"},
+        ]
+        for message in cases:
+            with self.subTest(message=message):
+                result = HostApplication("unused.json").dispatch(message)
+                self.assertEqual(result, {"ok": False, "error": "request_invalid", "fatal": False})
+                self.assertNotIn("leaked-user", str(result))
+
     def test_get_totp_lab_challenge_returns_only_the_constructed_url(self):
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
