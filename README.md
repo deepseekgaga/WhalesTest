@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 授权工作流由弹窗中的“授权登录工作流”分区启动，母页必须满足：
 
 - 当前活动标签页是普通窗口。
-- URL 精确等于 `http://127.0.0.1:9527/`。
+- URL 精确等于 `https://api.bridgefloods.com/admin/dashboard`。
 - 不是无痕标签页。
 
 流程顺序是：
@@ -171,7 +171,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 
 当前请求的主机权限只有：
 
-- `http://127.0.0.1:9527/*`
+- `https://api.bridgefloods.com/*`
 - `http://auth-target.local/*`
 - `http://totp-lab.local/*`
 - `http://sms-lab.local/*`
@@ -193,7 +193,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-install.ps1 -Extension
 
 | 错误码 | 含义 |
 | --- | --- |
-| `mother_url_invalid` | 当前活动母页不是精确的 `http://127.0.0.1:9527/`。 |
+| `mother_url_invalid` | 当前活动母页不是精确的 `https://api.bridgefloods.com/admin/dashboard`。 |
 | `selector_not_configured` | 必需选择器缺失、为空或仍是占位符。 |
 | `authorization_origin_mismatch` | 授权链接的 origin 与配置的 target origin 不一致。 |
 | `incognito_access_required` | Chrome 不允许创建或接管无痕窗口。 |

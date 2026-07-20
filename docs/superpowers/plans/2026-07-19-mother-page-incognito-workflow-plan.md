@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 从 `http://127.0.0.1:9527/` 母页自动创建账号、生成授权链接、在无痕窗口完成账号密码/TOTP/短信验证、点击接受并把最终 URL 回填母页，只有完整成功后才推进 Excel 行。
+**Goal:** 从 `https://api.bridgefloods.com/admin/dashboard` 母页自动创建账号、生成授权链接、在无痕窗口完成账号密码/TOTP/短信验证、点击接受并把最终 URL 回填母页，只有完整成功后才推进 Excel 行。
 
 **Architecture:** 新增独立 `workflow-controller.js` 作为可恢复的 Manifest V3 状态机，页面 DOM 动作拆分为自包含的可注入函数，Native Host 按物理 Excel 行提供 A/B 凭据并复用现有 C/D/E TOTP/SMS 模块。工作流状态只保存非秘密元数据到 `chrome.storage.session`，使用 `chrome.alarms` 跨 Service Worker 生命周期继续执行，并用唯一 `about:blank#whalestest-handoff-<batchId>` 标记避免重复创建无痕窗口。
 
@@ -1225,7 +1225,7 @@ function minimalOptions(overrides = {}) {
   };
 }
 
-function makeChrome({ motherUrl = "http://127.0.0.1:9527/" } = {}) {
+function makeChrome({ motherUrl = "https://api.bridgefloods.com/admin/dashboard" } = {}) {
   const session = {};
   const alarms = new Map();
   const tabs = new Map([[10, { id: 10, windowId: 1, index: 0, active: true, incognito: false, url: motherUrl, status: "complete" }]]);
@@ -1319,7 +1319,7 @@ test("binds sequence one to row two and reaches LOGIN through one owned incognit
 });
 
 test("fails before side effects when the active tab is not the exact mother URL", async () => {
-  const chrome = makeChrome({ motherUrl: "http://127.0.0.1:9527/other" });
+  const chrome = makeChrome({ motherUrl: "https://api.bridgefloods.com/admin/dashboard/other" });
   const controller = createWorkflowController(chrome, minimalOptions());
   const result = await controller.start();
   assert.equal(result.error, "mother_url_invalid");
@@ -1410,7 +1410,7 @@ export function createWorkflowController(api, options = {})
 ```js
 const STATE_KEY = "workflowState";
 const ALARM_PREFIX = "whalestest-workflow:";
-const MOTHER_URL = "http://127.0.0.1:9527/";
+const MOTHER_URL = "https://api.bridgefloods.com/admin/dashboard";
 const DEFAULT_TARGET_ORIGIN = "http://auth-target.local";
 const now = options.now ?? Date.now;
 const makeBatchId = options.makeBatchId ?? (() => globalThis.crypto.randomUUID());
@@ -2120,7 +2120,7 @@ test("prevents old and new batch controllers from running together", async () =>
 const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
 assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"]);
 assert.deepEqual(manifest.host_permissions, [
-  "http://127.0.0.1:9527/*",
+  "https://api.bridgefloods.com/*",
   "http://auth-target.local/*",
   "http://totp-lab.local/*",
   "http://sms-lab.local/*",
@@ -2203,7 +2203,7 @@ if (["start_workflow", "cancel_workflow", "workflow_state"].includes(message?.ty
 {
   "permissions": ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"],
   "host_permissions": [
-    "http://127.0.0.1:9527/*",
+    "https://api.bridgefloods.com/*",
     "http://auth-target.local/*",
     "http://totp-lab.local/*",
     "http://sms-lab.local/*"
@@ -2467,7 +2467,7 @@ git commit -m "Show workflow progress without removing the CC batch UI" `
    - `motherFinalConfirmButton`
    - `motherFinalSuccess`
 4. Chrome 扩展详情页必须启用“允许在无痕模式下运行”。
-5. 普通 Chrome 窗口打开 `http://127.0.0.1:9527/`，保持为当前选中标签。
+5. 普通 Chrome 窗口打开 `https://api.bridgefloods.com/admin/dashboard`，保持为当前选中标签。
 6. 点击插件“开始执行任务”。序号 1 对应 Excel 物理行 2；只有最终 URL 回填成功才推进序号。
 
 失败时任务停止，TOTP/SMS 辅助标签关闭，失败无痕窗口保留。插件显示序号、Excel 行、阶段和固定错误码，不显示密码、密钥、手机号或验证码。
@@ -2571,7 +2571,7 @@ git commit -m "Document the bounded mother-page workflow" `
 自动化测试全部通过后，使用用户填写的真实选择器和固定授权 origin 执行一次本地人工联调：
 
 1. 确认扩展已开启无痕权限；
-2. 母页根 URL 为 `http://127.0.0.1:9527/`；
+2. 母页根 URL 为 `https://api.bridgefloods.com/admin/dashboard`；
 3. Excel 第 2 行包含 A-E 完整测试数据；
 4. 点击“开始执行任务”；
 5. 确认母页名称符合 `YYYYMMDD-HHmm SHARKPIX PLUS 1`；

@@ -26,7 +26,7 @@ function minimalOptions(overrides = {}) {
 }
 
 function makeChrome({
-  motherUrl = "http://127.0.0.1:9527/",
+  motherUrl = "https://api.bridgefloods.com/admin/dashboard",
   noActiveTab = false,
   rejectAlarmCreate = false,
   rejectTabsQuery = false,
@@ -272,7 +272,7 @@ test("starts every new manual batch from row two and sequence one", async () => 
 });
 
 test("fails before side effects when the active tab is not the exact mother URL", async () => {
-  const chrome = makeChrome({ motherUrl: "http://127.0.0.1:9527/other" });
+  const chrome = makeChrome({ motherUrl: "https://api.bridgefloods.com/admin/dashboard/other" });
   const controller = createWorkflowController(chrome, minimalOptions());
   const result = await controller.start();
   assert.equal(result.error, "mother_url_invalid");

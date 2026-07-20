@@ -173,7 +173,7 @@ function makeWorkflowChrome({
   ccRunning = false,
   rejectResumeAlarm = false,
   ccBatchState = { running: ccRunning },
-  tabsQuery = async () => [{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }],
+  tabsQuery = async () => [{ id: 10, windowId: 1, active: true, incognito: false, url: "https://api.bridgefloods.com/admin/dashboard" }],
   sessionGet = async (key) => ({ [key]: undefined }),
 } = {}) {
   const alarmListeners = [];
@@ -446,7 +446,7 @@ test("declares only the fixed TOTP and SMS Lab hosts plus minimal extension perm
   assert.equal(manifest.description, "在授权隔离环境中运行 CC 数据处理和登录 MFA 流程测试。");
   assert.deepEqual(manifest.permissions, ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"]);
   assert.deepEqual(manifest.host_permissions, [
-    "http://127.0.0.1:9527/*",
+    "https://api.bridgefloods.com/*",
     "http://auth-target.local/*",
     "http://totp-lab.local/*",
     "http://sms-lab.local/*",
@@ -591,7 +591,7 @@ test("reserves a workflow lease before the controller start finishes so old CC s
     assert.equal(keepChannelOpen, false);
   });
   assert.equal(ccResponse.lastError, "another_workflow_running");
-  heldTabsQuery.resolve([{ id: 10, windowId: 1, active: true, incognito: false, url: "http://127.0.0.1:9527/" }]);
+  heldTabsQuery.resolve([{ id: 10, windowId: 1, active: true, incognito: false, url: "https://api.bridgefloods.com/admin/dashboard" }]);
   const workflowResponse = await startResponse;
   assert.equal(workflowResponse.ok, true);
   assert.equal(workflowResponse.result.state, "ROW_PREFLIGHT");

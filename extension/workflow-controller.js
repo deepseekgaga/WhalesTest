@@ -16,7 +16,7 @@ import { makeHandoffUrl, validateAuthorizationUrl, validateFinalUrl } from "./wo
 
 export const STATE_KEY = "workflowState";
 export const ALARM_PREFIX = "whalestest-workflow:";
-export const MOTHER_URL = "http://127.0.0.1:9527/";
+export const MOTHER_URL = "https://api.bridgefloods.com/admin/dashboard";
 export const DEFAULT_TARGET_ORIGIN = "http://auth-target.local";
 
 const HOST_NAME = "com.whalestest.cc_batch";

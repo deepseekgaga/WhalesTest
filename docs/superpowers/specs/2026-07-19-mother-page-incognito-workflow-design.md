@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-在现有 Manifest V3 Chrome 扩展和 Native Messaging 主机中增加一个独立的总工作流控制器。用户预先打开母页 `http://127.0.0.1:9527/`，点击扩展中的“开始执行任务”后，扩展自动完成：
+在现有 Manifest V3 Chrome 扩展和 Native Messaging 主机中增加一个独立的总工作流控制器。用户预先打开母页 `https://api.bridgefloods.com/admin/dashboard`，点击扩展中的“开始执行任务”后，扩展自动完成：
 
 1. 在母页创建账号并生成随机授权链接；
 2. 在新的 Chrome 无痕窗口打开授权链接；
@@ -48,7 +48,7 @@
 
 Host permissions 限定为：
 
-- `http://127.0.0.1:9527/*`
+- `https://api.bridgefloods.com/*`
 - `http://totp-lab.local/*`
 - `http://sms-lab.local/*`
 - `http://auth-target.local/*`
@@ -242,7 +242,7 @@ Service Worker 被 Chrome 暂停后，下一次 Alarm 从 `chrome.storage.sessio
 启动时：
 
 1. 获取当前激活标签；
-2. 要求 URL 精确为 `http://127.0.0.1:9527/`；
+2. 要求 URL 精确为 `https://api.bridgefloods.com/admin/dashboard`；
 3. 要求标签属于普通窗口；
 4. 保存母页标签和窗口 ID；
 5. 设置序号 1、物理 Excel 行 2。

@@ -6,7 +6,7 @@
   "description": "在授权隔离环境中运行 CC 数据处理和登录 MFA 流程测试。",
   "permissions": ["nativeMessaging", "tabs", "downloads", "storage", "activeTab", "scripting", "alarms"],
   "host_permissions": [
-    "http://127.0.0.1:9527/*",
+    "https://api.bridgefloods.com/*",
     "http://auth-target.local/*",
     "http://totp-lab.local/*",
     "http://sms-lab.local/*"

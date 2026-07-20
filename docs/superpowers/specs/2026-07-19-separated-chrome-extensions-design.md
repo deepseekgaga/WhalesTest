@@ -63,7 +63,7 @@ Whalestest/
 
 只保留母页、无痕窗口、登录、TOTP、本地 SMS、接受按钮、最终 URL 回填和工作流状态弹窗。其 manifest 仅声明授权靶场所需的固定 Host 权限：
 
-- `http://127.0.0.1:9527/*`
+- `https://api.bridgefloods.com/*`
 - `http://auth-target.local/*`
 - `http://totp-lab.local/*`
 - `http://sms-lab.local/*`

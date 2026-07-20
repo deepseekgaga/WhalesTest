@@ -81,7 +81,7 @@ Native Host 标识 `com.whalestest.cc_batch` 保持不变，避免破坏现有�
 
 保持现有最小权限边界，不新增 `<all_urls>`、`clipboardRead` 或 `debugger`。MFA 目标 Host 仍限定为：
 
-- `http://127.0.0.1:9527/*`
+- `https://api.bridgefloods.com/*`
 - `http://auth-target.local/*`
 - `http://totp-lab.local/*`
 - `http://sms-lab.local/*`
